@@ -1,0 +1,14 @@
+{
+  "type": "service_account",
+  "project_id": "weather-dashboard-499217",
+  "private_key_id": "81035c50177753ee9544fe5b108a53b681e26a4f",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCd0SlKMyp8kkEk\nNJNT18ETtVGjVRE94KxuOy92SPWB5UXnOevTW4/vhsUn/g2K3XA71A8T9Du+uboK\n6PyVlW58TmEKeMzzF3f9OuuJEATj/LYftvxvCn5i7whOExuYpkfCqKvEAT2ytuhH\nKg4+E4PKsMAcdgmeY6cZRL7sBJUEwAL3Hm8g8/ONzdDeqYr6DX3G1YDlPOil0t9m\nK8wJFxDvHxSnvygOUQi6fjSEzmCgHxBpJATC9y+yvtHgTyOxTHS/l1tEB2zH8MZe\nqal/q/pH9GduYqed3Jf1Ja1u61rkiVwkFWbgRB33GNhi7d0aaUHdUpsmY3NnlDsZ\nnv10aKx7AgMBAAECggEAAgNNP2tVDLJODv9CrJkxMIypmWeedcd8IfD/g0bQwGx8\n6BAAXR/eWQPcvbLxixNiLC+UvHO37VzvraLyHpnoByepK8zsCq+1pPu2GsRWPTtk\nbhW56FREb2oBrs+mLijBlcIfMSIcHnLs/IQugVLJzArvSfQLESoC004uqmwwI5em\npCmOKay3/vHA9vqWViJNMQxeQh7udcj4mL4+kdDH010/jlUCUj7K3UaGQW6xMgVJ\nPQMZ5cK6YHhLdbqaHKyb8EJFJm+Q/i/tp/2DScHMcWgjQGRtZR2FFFxJCL7vY7PE\nm3+IAV/vCSD0vd04zLREQeJJSPCTlCeJ/puLJUXcrQKBgQDOSWDdH9Bl2r7MAJif\nGamK4SKsAlvXCggvoNbjZAQwEXtSxPVaIHyyn5Zh3+VAcbuMrJ8UKiXKLJIFtDeN\nlE+fxYBC1XlcaanzeDoPwEqxM7iXU6YIkzYJifTFMRGo95img/uKVeFvCdrZWrLG\ngcc2D2U2hKw1E0TZER3g492fbQKBgQDD2YFxxuzVnq1phieMkBvg90o+LkCI686c\nv3g3XXSfd1ugsZVjNmh4QzZeP8z44nFW3s7WLb4m9N1oHGSRGQ+h14LdSrfEbkmR\nHEkMqhGRG+VekN3SyTLyLCyXMlBb00n6+OdT+pYCPXQPQfDVBMhXCUQ59lDTWCnZ\n+s2RTf3ChwKBgQCZpHWMvKFO+3mYH+mMtmRcmApm6urUYxhtwPHMMzYbRyn/H8tN\n8Vxu/gXXqBbrxMnXoMprDmlPB5tKvEuUG56idUtue+kEN37pY+Z6zNHU4ZzeuOK1\nCE/7EtFH/aAVpTQA8dRr2EMrnL9vm+oDh62ESjssO+y3Kz7gHauPUKhEkQKBgGtf\nYeJY5xsuxW/nBuO/Vil+KgvxG5x1e27gYi4oZHnQ3EE7WuVrvNbCMpp1bBC/RNgV\ni1xM88Uz1fbwKgqKrNFT8AEWp61fsaGG2l3BF6RwoM25qoOXnwC6SzARe5D8Q8D+\nmQSni3pq6qg6xKhk2Nku0WLdse5MlZVWNUGGeqsdAoGAUiaVVRmTez7xO85/RLcs\ndOYT7v80LdEh8oZyr4eMOr3UDy4rXPCkZ/OdlDp2R90ymaO00D1Imay9rW5x0SRa\n7IsDZ2SMyBPeQ5g9/ZoJmDo9ISEK2Rph6vgCk4ib090OR3nlaLjky5bNrJK5T+3v\nPQz8KwupYuZO9yAJMDN3zRs=\n-----END PRIVATE KEY-----\n",
+  "client_email": "weather-bot@weather-dashboard-499217.iam.gserviceaccount.com",
+  "client_id": "115889925699178778025",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/weather-bot%40weather-dashboard-499217.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+
+}

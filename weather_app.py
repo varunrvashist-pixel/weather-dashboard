@@ -4,16 +4,16 @@ import asyncio
 from datetime import datetime
 import pytz
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 from dotenv import load_dotenv
 from lacrosse_view import LaCrosse
 
 # --- CONFIGURATION ---
 load_dotenv()
 
-USERNAME = "rvashist@gmail.com"
-PASSWORD = "weather2807"
-TARGET_LOCATION_NAME = "Backyard"
+USERNAME = os.environ.get("LACROSSE_USER") or os.environ.get("LACROSSE_USERNAME") or ""
+PASSWORD = os.environ.get("LACROSSE_PASS") or os.environ.get("LACROSSE_PASSWORD") or ""
+TARGET_LOCATION_NAME = os.environ.get("TARGET_LOCATION_NAME", "Backyard")
 
 # Spreadsheet Configuration
 GOOGLE_SHEET_NAME = os.environ.get("GOOGLE_SHEET_NAME", "Weather Database").strip()
@@ -24,6 +24,55 @@ LOCAL_TIMEZONE = os.environ.get("LOCAL_TIMEZONE", "America/New_York").strip()
 TEMP_MIN, TEMP_MAX = -40.0, 130.0
 WIND_MIN, WIND_MAX = 0.0, 150.0
 HUMID_MIN, HUMID_MAX = 0.0, 100.0
+
+
+def _get_gspread_client():
+    """Create a gspread client from Streamlit secrets (if present) or a service account file.
+    This function uses google.oauth2.service_account to avoid oauth2client deprecation and
+    provides clearer errors for invalid_grant problems.
+    """
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # If running on Streamlit Cloud and secrets contains the key, prefer that (sa_info should be a dict)
+    try:
+        import streamlit as _st
+        sa_info = _st.secrets.get("gcp_service_account") if hasattr(_st, "secrets") else None
+    except Exception:
+        sa_info = None
+
+    try:
+        if sa_info:
+            # If the secret is a JSON string, parse it
+            if isinstance(sa_info, str):
+                import json
+
+                sa_info = json.loads(sa_info)
+
+            creds = service_account.Credentials.from_service_account_info(sa_info, scopes=scopes)
+            return gspread.authorize(creds)
+
+        # Fall back to a file on disk
+        if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
+            raise FileNotFoundError(f"Service account file not found: {GOOGLE_SERVICE_ACCOUNT_FILE}")
+
+        creds = service_account.Credentials.from_service_account_file(GOOGLE_SERVICE_ACCOUNT_FILE, scopes=scopes)
+        return gspread.authorize(creds)
+
+    except Exception as e:
+        # Surface helpful debugging for the common invalid_grant case
+        msg = str(e)
+        if "invalid_grant" in msg or "Invalid JWT Signature" in msg:
+            print("❌ Spreadsheet auth failed: invalid_grant (possible revoked/incorrect service account key or clock skew).")
+            print(" - Confirm the service account file is a valid service-account JSON with 'type':'service_account'.")
+            print(" - Ensure the service account key has not been deleted in Google Cloud Console.")
+            print(" - Ensure the runtime clock is correct (NTP-synced).")
+        else:
+            print(f"❌ Spreadsheet client creation failed: {e}")
+        raise
+
 
 async def get_clean_sensor_data():
     api = LaCrosse()
@@ -105,11 +154,10 @@ async def get_clean_sensor_data():
             pass
         return None
 
+
 def update_google_sheet(sensor_data):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SERVICE_ACCOUNT_FILE, scope)
-        client = gspread.authorize(creds)
+        client = _get_gspread_client()
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
         
         tz = pytz.timezone(LOCAL_TIMEZONE)
@@ -124,7 +172,9 @@ def update_google_sheet(sensor_data):
         print(f"📦 [Logged Verified Data] Temp: {temp_val}°F | Wind: {wind_val} mph | Humid: {humid_val}%")
             
     except Exception as e:
+        # If this is an auth issue, surfacing the original exception message helps diagnose
         print(f"❌ Spreadsheet write failed: {e}")
+
 
 async def main_loop():
     print(f"🚀 Initializing Backyard weather loop via La Crosse client library...")

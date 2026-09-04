@@ -2,9 +2,9 @@ name: Log Weather Station Data
 
 on:
   schedule:
-    # Runs every 15 minutes automatically 24/7
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+    # Runs every 5 minutes (GitHub Actions minimum allowed interval)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   log-data:

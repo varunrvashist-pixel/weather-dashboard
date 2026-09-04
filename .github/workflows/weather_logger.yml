@@ -1,0 +1,29 @@
+name: Log Weather Station Data
+
+on:
+  schedule:
+    # Runs every 15 minutes automatically 24/7
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  log-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install gspread google-auth lacrosse_view pytz
+
+      - name: Run Weather Logger
+        env:
+          GCP_KEY_BASE64: ${{ secrets.GCP_KEY_BASE64 }}
+          SPREADSHEET_NAME: "Weather Station Data"
+        run: python logger.py

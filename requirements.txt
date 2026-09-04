@@ -1,8 +1,9 @@
 streamlit
-pandas
-plotly
 gspread
-oauth2client
-prophet
-requests
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+python-dotenv
+pandas
+pytz
 lacrosse-view

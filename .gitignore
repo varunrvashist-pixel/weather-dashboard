@@ -5,3 +5,4 @@ cloud_key.jsoncloud_key.json
 *.json
 .DS_Store
 __pycache__/
+cloud_key.json

@@ -1,220 +1,157 @@
 import os
-import asyncio
-import time
-from datetime import datetime, timedelta
+import re
 import base64
 import json
-import pytz
-from dotenv import load_dotenv
-import gspread
-from google.oauth2.service_account import Credentials
-from lacrosse_view import LaCrosse
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import gspread
+from google.oauth2.service_account import Credentials
 
-# Load local environment variables if present
-load_dotenv()
+st.set_page_config(page_title="Dual Weather Station Dashboard", layout="wide")
 
-# Configuration
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Weather Station Data")
-TIMEZONE = "America/Los_Angeles"
+
+LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"
+TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"
 
 def get_google_sheets_client():
-    """Authenticates using Base64 secret on Streamlit Cloud, or local key files."""
-    if "GCP_KEY_BASE64" in st.secrets:
-        key_json = base64.b64decode(st.secrets["GCP_KEY_BASE64"]).decode("utf-8")
-        creds_info = json.loads(key_json)
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    elif os.path.exists("cloud_key.json"):
+    if os.path.exists("cloud_key.json"):
         creds = Credentials.from_service_account_file("cloud_key.json", scopes=SCOPES)
-    elif os.path.exists("key.json"):
-        creds = Credentials.from_service_account_file("key.json", scopes=SCOPES)
-    elif "gcp_service_account" in st.secrets:
-        creds_info = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    else:
-        raise FileNotFoundError("Could not find GCP credentials in st.secrets or local files.")
-    return gspread.authorize(creds)
-
-def is_plausible(temp, wind, hum):
-    """Filters out impossible sensor readings before logging."""
+        return gspread.authorize(creds)
+    
     try:
-        t = float(temp)
-        w = float(wind)
-        h = float(hum)
-        if not (-40 <= t <= 140): return False
-        if not (0 <= w < 150): return False
-        if not (0 <= h <= 100): return False
-        return True
-    except (ValueError, TypeError):
-        return False
+        if "GCP_KEY_BASE64" in st.secrets:
+            key_json = base64.b64decode(st.secrets["GCP_KEY_BASE64"]).decode("utf-8")
+            creds_info = json.loads(key_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+            return gspread.authorize(creds)
+    except Exception:
+        pass
 
-async def fetch_and_log_weather():
-    """Fetches the latest reading from La Crosse View and logs to Google Sheets."""
+    st.error("Missing credentials. Place cloud_key.json in your app directory.")
+    st.stop()
+
+@st.cache_data(ttl=20)
+def load_sheet_data(sheet_id):
     try:
         gc = get_google_sheets_client()
-        sheet = gc.open(SPREADSHEET_NAME).sheet1
+        sheet = gc.open_by_key(sheet_id).sheet1
+        records = sheet.get_all_records()
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+        return df.sort_values("Timestamp")
     except Exception as e:
-        print(f"Sheet access error: {e}")
+        st.error(f"Error loading sheet {sheet_id}: {e}")
+        return pd.DataFrame()
+
+def find_col(df, options):
+    for opt in options:
+        for c in df.columns:
+            if opt.lower() == str(c).strip().lower():
+                return c
+    return None
+
+def filter_by_duration(df, duration):
+    if df.empty or "Timestamp" not in df.columns:
+        return df
+    latest_time = df["Timestamp"].max()
+    if duration == "daily":
+        cutoff = latest_time - pd.Timedelta(days=1)
+    elif duration == "weekly":
+        cutoff = latest_time - pd.Timedelta(days=7)
+    elif duration == "monthly":
+        cutoff = latest_time - pd.Timedelta(days=30)
+    else:
+        return df
+    return df[df["Timestamp"] >= cutoff]
+
+def render_station_charts(df, station_name, tab_name):
+    if df.empty:
+        st.info(f"No data available for {station_name} in this timeframe.")
         return
 
-    try:
-        api = LaCrosse()
-        await api.login("rvashist@gmail.com", "weather2807")
-        locations = await api.get_locations()
-        if not locations:
-            return
+    temp_col = find_col(df, ["Temperature", "Temp", "Outdoor Temp"])
+    wind_col = find_col(df, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed"])
+    hum_col = find_col(df, ["Humidity", "Outdoor Humidity"])
 
-        location = locations[0]
-        end_time = datetime.now()
-        start_time = end_time - timedelta(minutes=10)
+    prefix = f"{tab_name}_{station_name}".lower().replace(" ", "_")
 
-        sensors = await api.get_sensors(
-            location,
-            tz=TIMEZONE,
-            start=int(time.mktime(start_time.timetuple())),
-            end=int(time.mktime(end_time.timetuple()))
-        )
+    if temp_col:
+        fig_temp = px.line(df, x="Timestamp", y=temp_col, title=f"{station_name} - Temperature")
+        st.plotly_chart(fig_temp, use_container_width=True, key=f"{prefix}_temp")
+    if wind_col:
+        fig_wind = px.line(df, x="Timestamp", y=wind_col, title=f"{station_name} - Wind Speed")
+        st.plotly_chart(fig_wind, use_container_width=True, key=f"{prefix}_wind")
+    if hum_col:
+        fig_hum = px.line(df, x="Timestamp", y=hum_col, title=f"{station_name} - Humidity")
+        st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum")
 
-        if not sensors:
-            return
-        sensor = sensors[0]
+@st.fragment(run_every="60s")
+def render_dashboard():
+    st.title("🌦️ Dual Station Weather Dashboard: La Crosse vs. Tempest")
 
-        temp_val, wind_val, hum_val = None, None, None
+    df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
+    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
 
-        for field in sensor.sensor_field_names:
-            try:
-                val = sensor.data[field]["values"][-1]["s"]
-                if "Temp" in field:
-                    raw_t = float(val)
-                    # Convert to °F if reading is reported in Celsius
-                    temp_val = round((raw_t * 9/5) + 32, 1) if raw_t < 45 else round(raw_t, 1)
-                elif "Speed" in field:
-                    wind_val = round(float(val), 1)
-                elif "Humidity" in field:
-                    hum_val = round(float(val), 1)
-            except (KeyError, IndexError, ValueError):
-                pass
+    col_lacrosse_metrics, col_tempest_metrics = st.columns(2)
 
-        if temp_val is not None and wind_val is not None and hum_val is not None:
-            if is_plausible(temp_val, wind_val, hum_val):
-                tz = pytz.timezone(TIMEZONE)
-                now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-                sheet.append_row([now_str, temp_val, wind_val, hum_val])
-                print(f"Logged reading: {[now_str, temp_val, wind_val, hum_val]}")
-            else:
-                print("Ignored implausible reading.")
-    except Exception as e:
-        print(f"Fetch error: {e}")
-    finally:
-        try:
-            await api.logout()
-        except Exception:
-            pass
+    with col_lacrosse_metrics:
+        st.subheader("🏡 La Crosse Station")
+        if not df_lacrosse.empty:
+            latest = df_lacrosse.iloc[-1]
+            temp_col = find_col(df_lacrosse, ["Temperature", "Temp", "Outdoor Temp"])
+            wind_col = find_col(df_lacrosse, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed"])
+            hum_col = find_col(df_lacrosse, ["Humidity", "Outdoor Humidity"])
 
-# Run data sync check once per browser session
-if "data_fetched" not in st.session_state:
-    asyncio.run(fetch_and_log_weather())
-    st.session_state["data_fetched"] = True
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
+            m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
+            m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+            st.caption(f"Last updated: {latest['Timestamp']}")
 
-# --- UI PAGE SETUP ---
-st.set_page_config(page_title="Backyard Weather", page_icon="🌤️", layout="wide")
-st.title("Backyard Weather Station 🌤️")
+    with col_tempest_metrics:
+        st.subheader("⚡ Tempest Station")
+        if not df_tempest.empty:
+            latest = df_tempest.iloc[-1]
+            temp_col = find_col(df_tempest, ["Temperature", "Temp"])
+            wind_col = find_col(df_tempest, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed"])
+            hum_col = find_col(df_tempest, ["Humidity"])
 
-try:
-    gc = get_google_sheets_client()
-    sheet = gc.open(SPREADSHEET_NAME).sheet1
-    raw_data = sheet.get_all_values()
-
-    if len(raw_data) <= 1:
-        st.info("No weather logs recorded yet. Waiting for initial readings...")
-        st.stop()
-
-    df = pd.DataFrame(raw_data[1:], columns=["Timestamp", "Temperature", "Wind Speed", "Humidity"])
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"])
-    df["Temperature"] = pd.to_numeric(df["Temperature"], errors="coerce")
-    df["Wind Speed"] = pd.to_numeric(df["Wind Speed"], errors="coerce")
-    df["Humidity"] = pd.to_numeric(df["Humidity"], errors="coerce")
-    df = df.dropna(subset=["Timestamp"]).sort_values("Timestamp")
-
-    # Time calculations
-    tz = pytz.timezone(TIMEZONE)
-    now_local = datetime.now(tz)
-    latest = df.iloc[-1]
-    latest_time = latest["Timestamp"].tz_localize(tz) if latest["Timestamp"].tzinfo is None else latest["Timestamp"].astimezone(tz)
-
-    is_stale = (now_local - latest_time) > timedelta(minutes=30)
-    time_display = latest_time.strftime("%I:%M %p")
-
-    # Top Snapshot Row
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Temperature", f"{latest['Temperature']} °F")
-    col2.metric("Wind Speed", f"{latest['Wind Speed']} mph")
-    col3.metric("Humidity", f"{latest['Humidity']} %")
-
-    if is_stale:
-        st.warning(f"⚠️ Readings as of {time_display} — no newer data received.")
-    else:
-        st.caption(f"Last updated: {time_display}")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
+            m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
+            m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+            st.caption(f"Last updated: {latest['Timestamp']}")
 
     st.divider()
 
-    # Filter for today (12:00 AM to 11:59 PM)
-    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = now_local.replace(hour=23, minute=59, second=59, microsecond=999999)
-    df_today = df[df["Timestamp"] >= today_start.replace(tzinfo=None)].copy()
+    tab_daily, tab_weekly, tab_monthly = st.tabs(["📅 Daily (Last 24h)", "🗓️ Weekly (Last 7 Days)", "📆 Monthly (Last 30 Days)"])
 
-    st.subheader("Today's Trends")
+    with tab_daily:
+        c1, c2 = st.columns(2)
+        with c1:
+            render_station_charts(filter_by_duration(df_lacrosse, "daily"), "La Crosse", "daily")
+        with c2:
+            render_station_charts(filter_by_duration(df_tempest, "daily"), "Tempest", "daily")
 
-    if df_today.empty:
-        st.info("No readings recorded yet today.")
-    else:
-        # Temperature Chart
-        fig_temp = px.line(
-            df_today, x="Timestamp", y="Temperature",
-            title="Temperature (°F)"
-        )
-        fig_temp.update_xaxes(range=[today_start.replace(tzinfo=None), today_end.replace(tzinfo=None)])
-        fig_temp.update_traces(
-            mode="lines+markers",
-            hovertemplate="%{y:.1f} °F<br>%{x|%I:%M %p}<extra></extra>"
-        )
-        st.plotly_chart(fig_temp, use_container_width=True)
+    with tab_weekly:
+        c1, c2 = st.columns(2)
+        with c1:
+            render_station_charts(filter_by_duration(df_lacrosse, "weekly"), "La Crosse", "weekly")
+        with c2:
+            render_station_charts(filter_by_duration(df_tempest, "weekly"), "Tempest", "weekly")
 
-        # Wind Speed Chart
-        fig_wind = px.line(
-            df_today, x="Timestamp", y="Wind Speed",
-            title="Wind Speed (mph)"
-        )
-        fig_wind.update_xaxes(range=[today_start.replace(tzinfo=None), today_end.replace(tzinfo=None)])
-        fig_wind.update_traces(
-            mode="lines+markers",
-            hovertemplate="%{y:.1f} mph<br>%{x|%I:%M %p}<extra></extra>"
-        )
-        st.plotly_chart(fig_wind, use_container_width=True)
+    with tab_monthly:
+        c1, c2 = st.columns(2)
+        with c1:
+            render_station_charts(filter_by_duration(df_lacrosse, "monthly"), "La Crosse", "monthly")
+        with c2:
+            render_station_charts(filter_by_duration(df_tempest, "monthly"), "Tempest", "monthly")
 
-        # Humidity Chart
-        fig_hum = px.line(
-            df_today, x="Timestamp", y="Humidity",
-            title="Humidity (%)"
-        )
-        fig_hum.update_xaxes(range=[today_start.replace(tzinfo=None), today_end.replace(tzinfo=None)])
-        fig_hum.update_traces(
-            mode="lines+markers",
-            hovertemplate="%{y:.1f} %<br>%{x|%I:%M %p}<extra></extra>"
-        )
-        st.plotly_chart(fig_hum, use_container_width=True)
-
-    st.divider()
-
-    # Page 2 link if the file exists
-    if os.path.exists("pages/1_Weekly_Trends.py"):
-        st.page_link("pages/1_Weekly_Trends.py", label="View Weekly Trends →", icon="📈")
-
-except Exception as e:
-    st.error(f"Could not load visual dashboard: {e}")
+render_dashboard()

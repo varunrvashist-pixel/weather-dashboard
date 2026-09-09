@@ -128,15 +128,8 @@ def render_station_charts(df, station_name, tab_name):
                 x="Timestamp",
                 y=temp_col,
                 title=f"{station_name} - Temperature Over Time",
-                markers=True,
-                template="plotly_dark",
             )
-            fig_temp.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=20, r=20, t=40, b=20),
-            )
-            st.plotly_chart(fig_temp, use_container_width=True, key=f"{prefix}_temp_chart")
+            st.plotly_chart(fig_temp, use_container_width=True, key=f"{prefix}_temp_fixed")
         else:
             st.info(f"No valid temperature values for {station_name}.")
 
@@ -156,15 +149,8 @@ def render_station_charts(df, station_name, tab_name):
                 x="Timestamp",
                 y=wind_col,
                 title=f"{station_name} - Wind Speed Over Time",
-                markers=True,
-                template="plotly_dark",
             )
-            fig_wind.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=20, r=20, t=40, b=20),
-            )
-            st.plotly_chart(fig_wind, use_container_width=True, key=f"{prefix}_wind_chart")
+            st.plotly_chart(fig_wind, use_container_width=True, key=f"{prefix}_wind_fixed")
 
     if hum_col:
         plot_df[hum_col] = (
@@ -182,15 +168,8 @@ def render_station_charts(df, station_name, tab_name):
                 x="Timestamp",
                 y=hum_col,
                 title=f"{station_name} - Humidity Over Time",
-                markers=True,
-                template="plotly_dark",
             )
-            fig_hum.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=20, r=20, t=40, b=20),
-            )
-            st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum_chart")
+            st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum_fixed")
 
 
 @st.fragment(run_every="180s")

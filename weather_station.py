@@ -61,7 +61,6 @@ def load_sheet_data(sheet_id):
             return pd.DataFrame()
         df = pd.DataFrame(records)
 
-        # Detect whichever column holds the date/time
         time_col = find_col(
             df, ["Timestamp", "Date", "Time", "Datetime", "Date/Time", "Logged At"]
         )
@@ -78,8 +77,11 @@ def load_sheet_data(sheet_id):
 
 def filter_by_duration(df, duration):
     if df.empty or "Timestamp" not in df.columns:
-        return df
-    latest_time = df["Timestamp"].max()
+        return df.copy()
+
+    temp_df = df.copy()
+    latest_time = temp_df["Timestamp"].max()
+
     if duration == "daily":
         cutoff = latest_time - pd.Timedelta(days=1)
     elif duration == "weekly":
@@ -87,8 +89,9 @@ def filter_by_duration(df, duration):
     elif duration == "monthly":
         cutoff = latest_time - pd.Timedelta(days=30)
     else:
-        return df
-    return df[df["Timestamp"] >= cutoff]
+        return temp_df
+
+    return temp_df[temp_df["Timestamp"] >= cutoff].copy()
 
 
 def render_station_charts(df, station_name, tab_name):
@@ -96,42 +99,98 @@ def render_station_charts(df, station_name, tab_name):
         st.info(f"No data available for {station_name} in this timeframe.")
         return
 
-    temp_col = find_col(df, ["Temperature", "Temp", "Outdoor Temp"])
-    wind_col = find_col(
-        df, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"]
-    )
-    hum_col = find_col(df, ["Humidity", "Outdoor Humidity"])
-
+    plot_df = df.copy()
     prefix = f"{tab_name}_{station_name}".lower().replace(" ", "_")
 
+    temp_col = find_col(
+        plot_df, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"]
+    )
+    wind_col = find_col(
+        plot_df, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"]
+    )
+    hum_col = find_col(
+        plot_df, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
+    )
+
     if temp_col:
-        fig_temp = px.line(
-            df,
-            x="Timestamp",
-            y=temp_col,
-            title=f"{station_name} - Temperature Over Time",
+        plot_df[temp_col] = (
+            plot_df[temp_col]
+            .astype(str)
+            .str.replace("°F", "", regex=False)
+            .str.strip()
         )
-        st.plotly_chart(
-            fig_temp, use_container_width=True, key=f"{prefix}_temp"
-        )
+        plot_df[temp_col] = pd.to_numeric(plot_df[temp_col], errors="coerce")
+        clean_temp_df = plot_df.dropna(subset=[temp_col, "Timestamp"]).sort_values("Timestamp")
+
+        if not clean_temp_df.empty:
+            fig_temp = px.line(
+                clean_temp_df,
+                x="Timestamp",
+                y=temp_col,
+                title=f"{station_name} - Temperature Over Time",
+                markers=True,
+                template="plotly_dark",
+            )
+            fig_temp.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig_temp, use_container_width=True, key=f"{prefix}_temp_chart")
+        else:
+            st.info(f"No valid temperature values for {station_name}.")
+
     if wind_col:
-        fig_wind = px.line(
-            df,
-            x="Timestamp",
-            y=wind_col,
-            title=f"{station_name} - Wind Speed Over Time",
+        plot_df[wind_col] = (
+            plot_df[wind_col]
+            .astype(str)
+            .str.replace("mph", "", regex=False)
+            .str.strip()
         )
-        st.plotly_chart(
-            fig_wind, use_container_width=True, key=f"{prefix}_wind"
-        )
+        plot_df[wind_col] = pd.to_numeric(plot_df[wind_col], errors="coerce")
+        clean_wind_df = plot_df.dropna(subset=[wind_col, "Timestamp"]).sort_values("Timestamp")
+
+        if not clean_wind_df.empty:
+            fig_wind = px.line(
+                clean_wind_df,
+                x="Timestamp",
+                y=wind_col,
+                title=f"{station_name} - Wind Speed Over Time",
+                markers=True,
+                template="plotly_dark",
+            )
+            fig_wind.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig_wind, use_container_width=True, key=f"{prefix}_wind_chart")
+
     if hum_col:
-        fig_hum = px.line(
-            df,
-            x="Timestamp",
-            y=hum_col,
-            title=f"{station_name} - Humidity Over Time",
+        plot_df[hum_col] = (
+            plot_df[hum_col]
+            .astype(str)
+            .str.replace("%", "", regex=False)
+            .str.strip()
         )
-        st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum")
+        plot_df[hum_col] = pd.to_numeric(plot_df[hum_col], errors="coerce")
+        clean_hum_df = plot_df.dropna(subset=[hum_col, "Timestamp"]).sort_values("Timestamp")
+
+        if not clean_hum_df.empty:
+            fig_hum = px.line(
+                clean_hum_df,
+                x="Timestamp",
+                y=hum_col,
+                title=f"{station_name} - Humidity Over Time",
+                markers=True,
+                template="plotly_dark",
+            )
+            fig_hum.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum_chart")
 
 
 @st.fragment(run_every="180s")
@@ -168,12 +227,16 @@ def render_dashboard():
         st.subheader("⚡ Tempest Station")
         if not df_tempest.empty:
             latest = df_tempest.iloc[-1]
-            temp_col = find_col(df_tempest, ["Temperature", "Temp"])
+            temp_col = find_col(
+                df_tempest, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"]
+            )
             wind_col = find_col(
                 df_tempest,
                 ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"],
             )
-            hum_col = find_col(df_tempest, ["Humidity"])
+            hum_col = find_col(
+                df_tempest, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
+            )
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")

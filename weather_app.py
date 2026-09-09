@@ -112,6 +112,8 @@ def render_station_charts(df, station_name, tab_name):
         plot_df, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
     )
 
+    chart_config = {"responsive": True, "displayModeBar": False}
+
     if temp_col:
         plot_df[temp_col] = (
             plot_df[temp_col]
@@ -129,7 +131,13 @@ def render_station_charts(df, station_name, tab_name):
                 y=temp_col,
                 title=f"{station_name} - Temperature Over Time",
             )
-            st.plotly_chart(fig_temp, use_container_width=True, key=f"{prefix}_temp_fixed")
+            fig_temp.update_layout(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(
+                fig_temp,
+                use_container_width=True,
+                config=chart_config,
+                key=f"{prefix}_temp_fixed",
+            )
         else:
             st.info(f"No valid temperature values for {station_name}.")
 
@@ -150,7 +158,13 @@ def render_station_charts(df, station_name, tab_name):
                 y=wind_col,
                 title=f"{station_name} - Wind Speed Over Time",
             )
-            st.plotly_chart(fig_wind, use_container_width=True, key=f"{prefix}_wind_fixed")
+            fig_wind.update_layout(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(
+                fig_wind,
+                use_container_width=True,
+                config=chart_config,
+                key=f"{prefix}_wind_fixed",
+            )
 
     if hum_col:
         plot_df[hum_col] = (
@@ -169,7 +183,13 @@ def render_station_charts(df, station_name, tab_name):
                 y=hum_col,
                 title=f"{station_name} - Humidity Over Time",
             )
-            st.plotly_chart(fig_hum, use_container_width=True, key=f"{prefix}_hum_fixed")
+            fig_hum.update_layout(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(
+                fig_hum,
+                use_container_width=True,
+                config=chart_config,
+                key=f"{prefix}_hum_fixed",
+            )
 
 
 @st.fragment(run_every="180s")
@@ -227,15 +247,16 @@ def render_dashboard():
 
     st.divider()
 
-    tab_daily, tab_weekly, tab_monthly = st.tabs(
-        [
-            "📅 Daily (Last 24h)",
-            "🗓️ Weekly (Last 7 Days)",
-            "📆 Monthly (Last 30 Days)",
-        ]
+    # Using a segmented pill/radio button ensures inactive tabs are not 
+    # hidden with CSS display:none, eliminating the collapsed/white graph bug
+    timeframe = st.radio(
+        "Select Timeframe",
+        ["📅 Daily (Last 24h)", "🗓️ Weekly (Last 7 Days)", "📆 Monthly (Last 30 Days)"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with tab_daily:
+    if timeframe == "📅 Daily (Last 24h)":
         c1, c2 = st.columns(2)
         with c1:
             render_station_charts(
@@ -246,7 +267,7 @@ def render_dashboard():
                 filter_by_duration(df_tempest, "daily"), "Tempest", "daily"
             )
 
-    with tab_weekly:
+    elif timeframe == "🗓️ Weekly (Last 7 Days)":
         c1, c2 = st.columns(2)
         with c1:
             render_station_charts(
@@ -257,7 +278,7 @@ def render_dashboard():
                 filter_by_duration(df_tempest, "weekly"), "Tempest", "weekly"
             )
 
-    with tab_monthly:
+    elif timeframe == "📆 Monthly (Last 30 Days)":
         c1, c2 = st.columns(2)
         with c1:
             render_station_charts(

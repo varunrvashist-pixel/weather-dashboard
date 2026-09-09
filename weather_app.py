@@ -88,6 +88,8 @@ def filter_by_duration(df, duration):
         cutoff = latest_time - pd.Timedelta(days=7)
     elif duration == "monthly":
         cutoff = latest_time - pd.Timedelta(days=30)
+    elif duration == "all":
+        return temp_df
     else:
         return temp_df
 
@@ -247,11 +249,14 @@ def render_dashboard():
 
     st.divider()
 
-    # Using a segmented pill/radio button ensures inactive tabs are not 
-    # hidden with CSS display:none, eliminating the collapsed/white graph bug
     timeframe = st.radio(
         "Select Timeframe",
-        ["📅 Daily (Last 24h)", "🗓️ Weekly (Last 7 Days)", "📆 Monthly (Last 30 Days)"],
+        [
+            "📅 Daily (Last 24h)",
+            "🗓️ Weekly (Last 7 Days)",
+            "📆 Monthly (Last 30 Days)",
+            "♾️ All Time",
+        ],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -289,6 +294,19 @@ def render_dashboard():
         with c2:
             render_station_charts(
                 filter_by_duration(df_tempest, "monthly"), "Tempest", "monthly"
+            )
+
+    elif timeframe == "♾️ All Time":
+        c1, c2 = st.columns(2)
+        with c1:
+            render_station_charts(
+                filter_by_duration(df_lacrosse, "all"),
+                "La Crosse",
+                "all",
+            )
+        with c2:
+            render_station_charts(
+                filter_by_duration(df_tempest, "all"), "Tempest", "all"
             )
 
 

@@ -78,6 +78,12 @@ def load_sheet_data(sheet_id):
         return pd.DataFrame()
 
 
+def format_display_time(ts):
+    if pd.isna(ts):
+        return "N/A"
+    return pd.to_datetime(ts).strftime("%b %d, %Y, %-I:%M:%S %p")
+
+
 def filter_by_duration(df, duration):
     if df.empty or "Timestamp" not in df.columns:
         return df.copy()
@@ -112,10 +118,13 @@ def render_station_charts(df, station_name, tab_name):
     prefix = f"{tab_name}_{station_name}".lower().replace(" ", "_")
 
     day_x_range = None
+    tick_format = "%b %d, %-I:%M %p"
+
     if tab_name == "daily" and not plot_df.empty:
         day_start = plot_df["Timestamp"].max().normalize()
         day_end = day_start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         day_x_range = [day_start, day_end]
+        tick_format = "%-I:%M %p"
 
     temp_col = find_col(
         plot_df, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"]
@@ -149,7 +158,11 @@ def render_station_charts(df, station_name, tab_name):
                 y=temp_col,
                 title=f"{station_name} - Temperature Over Time",
             )
-            layout_args = dict(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            layout_args = dict(
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                xaxis=dict(tickformat=tick_format),
+            )
             if day_x_range:
                 layout_args["xaxis_range"] = day_x_range
             fig_temp.update_layout(**layout_args)
@@ -177,7 +190,11 @@ def render_station_charts(df, station_name, tab_name):
                 y=wind_col,
                 title=f"{station_name} - Wind Speed Over Time",
             )
-            layout_args = dict(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            layout_args = dict(
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                xaxis=dict(tickformat=tick_format),
+            )
             if day_x_range:
                 layout_args["xaxis_range"] = day_x_range
             fig_wind.update_layout(**layout_args)
@@ -205,7 +222,11 @@ def render_station_charts(df, station_name, tab_name):
                 y=hum_col,
                 title=f"{station_name} - Humidity Over Time",
             )
-            layout_args = dict(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            layout_args = dict(
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                xaxis=dict(tickformat=tick_format),
+            )
             if day_x_range:
                 layout_args["xaxis_range"] = day_x_range
             fig_hum.update_layout(**layout_args)
@@ -233,7 +254,11 @@ def render_station_charts(df, station_name, tab_name):
                 y=press_col,
                 title=f"{station_name} - Pressure Over Time",
             )
-            layout_args = dict(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            layout_args = dict(
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                xaxis=dict(tickformat=tick_format),
+            )
             if day_x_range:
                 layout_args["xaxis_range"] = day_x_range
             fig_press.update_layout(**layout_args)
@@ -277,7 +302,7 @@ def render_dashboard():
                 m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
                 m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
                 m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
-                st.caption(f"Last updated: {latest['Timestamp']}")
+                st.caption(f"Last updated: {format_display_time(latest['Timestamp'])}")
             else:
                 st.warning("No data found for La Crosse station.")
 
@@ -293,7 +318,7 @@ def render_dashboard():
                 m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
                 m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
                 m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
-                st.caption(f"Last updated: {latest['Timestamp']}")
+                st.caption(f"Last updated: {format_display_time(latest['Timestamp'])}")
             else:
                 st.warning("No data found for Tempest station.")
 
@@ -309,7 +334,7 @@ def render_dashboard():
             m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
             m2.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
             m3.metric("Pressure", f"{latest[press_col]} hPa" if press_col else "N/A")
-            st.caption(f"Last updated: {latest['Timestamp']}")
+            st.caption(f"Last updated: {format_display_time(latest['Timestamp'])}")
         else:
             st.warning("No data found for DIY station.")
 

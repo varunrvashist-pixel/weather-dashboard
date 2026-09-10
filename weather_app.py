@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="Tri-Station Weather Dashboard", layout="wide")
+st.set_page_config(page_title="Weather Station Dashboard", layout="wide")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -225,7 +225,7 @@ def render_station_charts(df, station_name, tab_name):
 
 @st.fragment(run_every="180s")
 def render_dashboard():
-    st.title("🌦️ Weather Station Dashboard: La Crosse vs. Tempest vs. DIY BME280")
+    st.title("🌦️ Multi-Station Weather Dashboard")
 
     df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
     df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
@@ -283,6 +283,17 @@ def render_dashboard():
 
     st.divider()
 
+    # Priority view selector directly above the timeframe controls
+    station_view = st.radio(
+        "Station View",
+        [
+            "⚡ La Crosse & Tempest",
+            "🛠️ DIY BME280 Station",
+            "📊 All 3 Stations (Side-by-Side)",
+        ],
+        horizontal=True,
+    )
+
     timeframe = st.radio(
         "Select Timeframe",
         [
@@ -305,19 +316,36 @@ def render_dashboard():
         )
     )
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        render_station_charts(
-            filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
-        )
-    with c2:
-        render_station_charts(
-            filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
-        )
-    with c3:
+    if station_view == "⚡ La Crosse & Tempest":
+        c1, c2 = st.columns(2)
+        with c1:
+            render_station_charts(
+                filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
+            )
+        with c2:
+            render_station_charts(
+                filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
+            )
+
+    elif station_view == "🛠️ DIY BME280 Station":
         render_station_charts(
             filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
         )
+
+    elif station_view == "📊 All 3 Stations (Side-by-Side)":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            render_station_charts(
+                filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
+            )
+        with c2:
+            render_station_charts(
+                filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
+            )
+        with c3:
+            render_station_charts(
+                filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
+            )
 
 
 render_dashboard()

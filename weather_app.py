@@ -225,48 +225,60 @@ def render_station_charts(df, station_name, tab_name):
 
 @st.fragment(run_every="180s")
 def render_dashboard():
-    st.title("🌦️ Multi-Station Weather Dashboard")
+    st.title("🌦️ Weather Station Dashboard")
+
+    # Priority station selector at the top
+    station_view = st.radio(
+        "Station View",
+        [
+            "⚡ La Crosse & Tempest",
+            "🛠️ DIY BME280 Station",
+        ],
+        horizontal=True,
+    )
 
     df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
     df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
     df_diy = load_sheet_data(DIY_SHEET_ID)
 
-    col_lacrosse, col_tempest, col_diy = st.columns(3)
+    # Render metric cards based on selected tab view
+    if station_view == "⚡ La Crosse & Tempest":
+        col_lacrosse, col_tempest = st.columns(2)
 
-    with col_lacrosse:
-        st.subheader("🏡 La Crosse")
-        if not df_lacrosse.empty:
-            latest = df_lacrosse.iloc[-1]
-            temp_col = find_col(df_lacrosse, ["Temperature", "Temp", "Outdoor Temp"])
-            wind_col = find_col(df_lacrosse, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
-            hum_col = find_col(df_lacrosse, ["Humidity", "Outdoor Humidity"])
+        with col_lacrosse:
+            st.subheader("🏡 La Crosse")
+            if not df_lacrosse.empty:
+                latest = df_lacrosse.iloc[-1]
+                temp_col = find_col(df_lacrosse, ["Temperature", "Temp", "Outdoor Temp"])
+                wind_col = find_col(df_lacrosse, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
+                hum_col = find_col(df_lacrosse, ["Humidity", "Outdoor Humidity"])
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
-            m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
-            m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
-            st.caption(f"Last updated: {latest['Timestamp']}")
-        else:
-            st.warning("No data found for La Crosse station.")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
+                m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
+                m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+                st.caption(f"Last updated: {latest['Timestamp']}")
+            else:
+                st.warning("No data found for La Crosse station.")
 
-    with col_tempest:
-        st.subheader("⚡ Tempest")
-        if not df_tempest.empty:
-            latest = df_tempest.iloc[-1]
-            temp_col = find_col(df_tempest, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"])
-            wind_col = find_col(df_tempest, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
-            hum_col = find_col(df_tempest, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"])
+        with col_tempest:
+            st.subheader("⚡ Tempest")
+            if not df_tempest.empty:
+                latest = df_tempest.iloc[-1]
+                temp_col = find_col(df_tempest, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"])
+                wind_col = find_col(df_tempest, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
+                hum_col = find_col(df_tempest, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"])
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
-            m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
-            m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
-            st.caption(f"Last updated: {latest['Timestamp']}")
-        else:
-            st.warning("No data found for Tempest station.")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
+                m2.metric("Wind", f"{latest[wind_col]} mph" if wind_col else "N/A")
+                m3.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+                st.caption(f"Last updated: {latest['Timestamp']}")
+            else:
+                st.warning("No data found for Tempest station.")
 
-    with col_diy:
-        st.subheader("🛠️ DIY BME280")
+    else:
+        st.subheader("🛠️ DIY BME280 Station")
         if not df_diy.empty:
             latest = df_diy.iloc[-1]
             temp_col = find_col(df_diy, ["Temperature", "Temp"])
@@ -275,24 +287,13 @@ def render_dashboard():
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
-            m2.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+            m1_hum = m2.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
             m3.metric("Pressure", f"{latest[press_col]} hPa" if press_col else "N/A")
             st.caption(f"Last updated: {latest['Timestamp']}")
         else:
             st.warning("No data found for DIY station.")
 
     st.divider()
-
-    # Priority view selector directly above the timeframe controls
-    station_view = st.radio(
-        "Station View",
-        [
-            "⚡ La Crosse & Tempest",
-            "🛠️ DIY BME280 Station",
-            "📊 All 3 Stations (Side-by-Side)",
-        ],
-        horizontal=True,
-    )
 
     timeframe = st.radio(
         "Select Timeframe",
@@ -331,21 +332,6 @@ def render_dashboard():
         render_station_charts(
             filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
         )
-
-    elif station_view == "📊 All 3 Stations (Side-by-Side)":
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            render_station_charts(
-                filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
-            )
-        with c2:
-            render_station_charts(
-                filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
-            )
-        with c3:
-            render_station_charts(
-                filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
-            )
 
 
 render_dashboard()

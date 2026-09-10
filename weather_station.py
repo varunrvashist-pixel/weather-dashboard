@@ -343,9 +343,9 @@ def render_dashboard():
     timeframe = st.radio(
         "Select Timeframe",
         [
-            "📅 Daily (12:00 AM - 11:59 PM)",
-            "🗓️ Weekly (Last 7 Days)",
-            "📆 Monthly (Last 30 Days)",
+            "📅 Daily",
+            "🗓️ Weekly",
+            "📆 Monthly",
             "♾️ All Time",
         ],
         horizontal=True,

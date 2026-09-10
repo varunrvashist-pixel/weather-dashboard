@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="Dual Weather Station Dashboard", layout="wide")
+st.set_page_config(page_title="Tri-Station Weather Dashboard", layout="wide")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -17,6 +17,7 @@ SCOPES = [
 
 LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"
 TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"
+DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
 
 
 def get_google_sheets_client():
@@ -53,6 +54,8 @@ def find_col(df, options):
 
 @st.cache_data(ttl=180)
 def load_sheet_data(sheet_id):
+    if not sheet_id:
+        return pd.DataFrame()
     try:
         gc = get_google_sheets_client()
         sheet = gc.open_by_key(sheet_id).sheet1
@@ -62,7 +65,7 @@ def load_sheet_data(sheet_id):
         df = pd.DataFrame(records)
 
         time_col = find_col(
-            df, ["Timestamp", "Date", "Time", "Datetime", "Date/Time", "Logged At"]
+            df, ["Date/Time", "Timestamp", "Date", "Time", "Datetime", "Logged At"]
         )
         if time_col:
             df["Timestamp"] = pd.to_datetime(df[time_col], errors="coerce")
@@ -111,7 +114,10 @@ def render_station_charts(df, station_name, tab_name):
         plot_df, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"]
     )
     hum_col = find_col(
-        plot_df, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
+        plot_df, ["Humidity (%)", "Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
+    )
+    press_col = find_col(
+        plot_df, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"]
     )
 
     chart_config = {"responsive": True, "displayModeBar": False}
@@ -138,10 +144,8 @@ def render_station_charts(df, station_name, tab_name):
                 fig_temp,
                 use_container_width=True,
                 config=chart_config,
-                key=f"{prefix}_temp_fixed",
+                key=f"{prefix}_temp_chart",
             )
-        else:
-            st.info(f"No valid temperature values for {station_name}.")
 
     if wind_col:
         plot_df[wind_col] = (
@@ -165,7 +169,7 @@ def render_station_charts(df, station_name, tab_name):
                 fig_wind,
                 use_container_width=True,
                 config=chart_config,
-                key=f"{prefix}_wind_fixed",
+                key=f"{prefix}_wind_chart",
             )
 
     if hum_col:
@@ -190,30 +194,51 @@ def render_station_charts(df, station_name, tab_name):
                 fig_hum,
                 use_container_width=True,
                 config=chart_config,
-                key=f"{prefix}_hum_fixed",
+                key=f"{prefix}_hum_chart",
+            )
+
+    if press_col:
+        plot_df[press_col] = (
+            plot_df[press_col]
+            .astype(str)
+            .str.replace("hPa", "", regex=False)
+            .str.strip()
+        )
+        plot_df[press_col] = pd.to_numeric(plot_df[press_col], errors="coerce")
+        clean_press_df = plot_df.dropna(subset=[press_col, "Timestamp"]).sort_values("Timestamp")
+
+        if not clean_press_df.empty:
+            fig_press = px.line(
+                clean_press_df,
+                x="Timestamp",
+                y=press_col,
+                title=f"{station_name} - Pressure Over Time",
+            )
+            fig_press.update_layout(autosize=True, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(
+                fig_press,
+                use_container_width=True,
+                config=chart_config,
+                key=f"{prefix}_press_chart",
             )
 
 
 @st.fragment(run_every="180s")
 def render_dashboard():
-    st.title("🌦️ Dual Station Weather Dashboard: La Crosse vs. Tempest")
+    st.title("🌦️ Weather Station Dashboard: La Crosse vs. Tempest vs. DIY BME280")
 
     df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
     df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_diy = load_sheet_data(DIY_SHEET_ID)
 
-    col_lacrosse_metrics, col_tempest_metrics = st.columns(2)
+    col_lacrosse, col_tempest, col_diy = st.columns(3)
 
-    with col_lacrosse_metrics:
-        st.subheader("🏡 La Crosse Station")
+    with col_lacrosse:
+        st.subheader("🏡 La Crosse")
         if not df_lacrosse.empty:
             latest = df_lacrosse.iloc[-1]
-            temp_col = find_col(
-                df_lacrosse, ["Temperature", "Temp", "Outdoor Temp"]
-            )
-            wind_col = find_col(
-                df_lacrosse,
-                ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"],
-            )
+            temp_col = find_col(df_lacrosse, ["Temperature", "Temp", "Outdoor Temp"])
+            wind_col = find_col(df_lacrosse, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
             hum_col = find_col(df_lacrosse, ["Humidity", "Outdoor Humidity"])
 
             m1, m2, m3 = st.columns(3)
@@ -224,20 +249,13 @@ def render_dashboard():
         else:
             st.warning("No data found for La Crosse station.")
 
-    with col_tempest_metrics:
-        st.subheader("⚡ Tempest Station")
+    with col_tempest:
+        st.subheader("⚡ Tempest")
         if not df_tempest.empty:
             latest = df_tempest.iloc[-1]
-            temp_col = find_col(
-                df_tempest, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"]
-            )
-            wind_col = find_col(
-                df_tempest,
-                ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"],
-            )
-            hum_col = find_col(
-                df_tempest, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"]
-            )
+            temp_col = find_col(df_tempest, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"])
+            wind_col = find_col(df_tempest, ["Wind Speed", "Wind", "Wind_Speed", "WindSpeed", "Wind (mph)"])
+            hum_col = find_col(df_tempest, ["Humidity", "Outdoor Humidity", "Relative Humidity", "hum"])
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
@@ -246,6 +264,22 @@ def render_dashboard():
             st.caption(f"Last updated: {latest['Timestamp']}")
         else:
             st.warning("No data found for Tempest station.")
+
+    with col_diy:
+        st.subheader("🛠️ DIY BME280")
+        if not df_diy.empty:
+            latest = df_diy.iloc[-1]
+            temp_col = find_col(df_diy, ["Temperature", "Temp"])
+            hum_col = find_col(df_diy, ["Humidity (%)", "Humidity", "hum"])
+            press_col = find_col(df_diy, ["Pressure", "Pressure (hPa)"])
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Temp", f"{latest[temp_col]} °F" if temp_col else "N/A")
+            m2.metric("Humidity", f"{latest[hum_col]} %" if hum_col else "N/A")
+            m3.metric("Pressure", f"{latest[press_col]} hPa" if press_col else "N/A")
+            st.caption(f"Last updated: {latest['Timestamp']}")
+        else:
+            st.warning("No data found for DIY station.")
 
     st.divider()
 
@@ -261,53 +295,29 @@ def render_dashboard():
         label_visibility="collapsed",
     )
 
-    if timeframe == "📅 Daily (Last 24h)":
-        c1, c2 = st.columns(2)
-        with c1:
-            render_station_charts(
-                filter_by_duration(df_lacrosse, "daily"), "La Crosse", "daily"
-            )
-        with c2:
-            render_station_charts(
-                filter_by_duration(df_tempest, "daily"), "Tempest", "daily"
-            )
+    duration_key = (
+        "daily"
+        if "Daily" in timeframe
+        else (
+            "weekly"
+            if "Weekly" in timeframe
+            else ("monthly" if "Monthly" in timeframe else "all")
+        )
+    )
 
-    elif timeframe == "🗓️ Weekly (Last 7 Days)":
-        c1, c2 = st.columns(2)
-        with c1:
-            render_station_charts(
-                filter_by_duration(df_lacrosse, "weekly"), "La Crosse", "weekly"
-            )
-        with c2:
-            render_station_charts(
-                filter_by_duration(df_tempest, "weekly"), "Tempest", "weekly"
-            )
-
-    elif timeframe == "📆 Monthly (Last 30 Days)":
-        c1, c2 = st.columns(2)
-        with c1:
-            render_station_charts(
-                filter_by_duration(df_lacrosse, "monthly"),
-                "La Crosse",
-                "monthly",
-            )
-        with c2:
-            render_station_charts(
-                filter_by_duration(df_tempest, "monthly"), "Tempest", "monthly"
-            )
-
-    elif timeframe == "♾️ All Time":
-        c1, c2 = st.columns(2)
-        with c1:
-            render_station_charts(
-                filter_by_duration(df_lacrosse, "all"),
-                "La Crosse",
-                "all",
-            )
-        with c2:
-            render_station_charts(
-                filter_by_duration(df_tempest, "all"), "Tempest", "all"
-            )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_station_charts(
+            filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
+        )
+    with c2:
+        render_station_charts(
+            filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
+        )
+    with c3:
+        render_station_charts(
+            filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
+        )
 
 
 render_dashboard()

@@ -44,6 +44,23 @@ def render_metar_dropdown(station_code="KSQL"):
             st.write(f"METAR data currently unavailable for {station_code}.")
             return
 
+        st.markdown(
+            """
+            <style>
+            [data-testid="stMetricValue"] {
+                font-size: 1.15rem !important;
+            }
+            [data-testid="stMetricLabel"] {
+                font-size: 0.75rem !important;
+            }
+            div[data-testid="stCodeBlock"] pre {
+                font-size: 0.75rem !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
         temp_c = obs.get("temp")
         temp_f = f"{round((temp_c * 9 / 5) + 32, 1)}°F" if temp_c is not None else "N/A"
 
@@ -54,7 +71,6 @@ def render_metar_dropdown(station_code="KSQL"):
         wdir = obs.get("wdir")
         if wspd_kt is not None:
             wspd_mph = round(wspd_kt * 1.15078, 1)
-            # Compact wind representation so it fits without truncation (...)
             wind_str = f"{wspd_mph} mph ({wdir}°)" if wdir is not None else f"{wspd_mph} mph"
         else:
             wind_str = "N/A"
@@ -290,7 +306,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
                 key=f"{prefix}_hum_chart",
             )
 
-    # Collapsible METAR dropdown under the humidity chart
     render_metar_dropdown(metar_station)
 
     if press_col:

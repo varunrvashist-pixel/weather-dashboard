@@ -22,9 +22,9 @@ DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
 
 
 @st.cache_data(ttl=300)
-def get_ksql_metar():
+def get_metar_data(station_code="KSQL"):
     url = "https://aviationweather.gov/api/data/metar"
-    params = {"ids": "KSQL", "format": "json"}
+    params = {"ids": station_code, "format": "json"}
     try:
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
@@ -35,33 +35,38 @@ def get_ksql_metar():
     return None
 
 
-def render_metar_dropdown(unique_key):
-    obs = get_ksql_metar()
-    with st.expander("🛫 KSQL Airport Reference (METAR)"):
+def render_metar_dropdown(station_code="KSQL"):
+    obs = get_metar_data(station_code)
+    label = f"🛫 {station_code} Airport Reference (METAR)"
+
+    with st.expander(label):
         if not obs:
-            st.write("METAR data currently unavailable.")
+            st.write(f"METAR data currently unavailable for {station_code}.")
             return
 
         temp_c = obs.get("temp")
-        temp_f = round((temp_c * 9 / 5) + 32, 1) if temp_c is not None else "N/A"
+        temp_f = f"{round((temp_c * 9 / 5) + 32, 1)}°F" if temp_c is not None else "N/A"
 
         dewp_c = obs.get("dewp")
-        dewp_f = round((dewp_c * 9 / 5) + 32, 1) if dewp_c is not None else "N/A"
+        dewp_f = f"{round((dewp_c * 9 / 5) + 32, 1)}°F" if dewp_c is not None else "N/A"
 
         wspd_kt = obs.get("wspd")
-        wspd_mph = (
-            round(wspd_kt * 1.15078, 1) if wspd_kt is not None else "N/A"
-        )
+        wdir = obs.get("wdir")
+        if wspd_kt is not None:
+            wspd_mph = round(wspd_kt * 1.15078, 1)
+            # Compact wind representation so it fits without truncation (...)
+            wind_str = f"{wspd_mph} mph ({wdir}°)" if wdir is not None else f"{wspd_mph} mph"
+        else:
+            wind_str = "N/A"
 
-        altim_mb = obs.get("altim", "N/A")
-        wdir = obs.get("wdir", "N/A")
+        altim_mb = f"{obs.get('altim')} hPa" if obs.get("altim") else "N/A"
         fltcat = obs.get("fltcat", "N/A")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Airport Temp", f"{temp_f} °F")
-        col2.metric("Wind", f"{wspd_mph} mph @ {wdir}°")
-        col3.metric("Dew Point", f"{dewp_f} °F")
-        col4.metric("Altimeter", f"{altim_mb} hPa")
+        col1.metric("Temp", temp_f)
+        col2.metric("Wind", wind_str)
+        col3.metric("Dew Point", dewp_f)
+        col4.metric("Pressure", altim_mb)
 
         st.caption(f"**Flight Category:** {fltcat}")
         st.code(obs.get("rawOb", ""), language="text")
@@ -156,10 +161,10 @@ def filter_by_duration(df, duration):
     return temp_df[temp_df["Timestamp"] >= cutoff].copy()
 
 
-def render_station_charts(df, station_name, tab_name):
+def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
     if df.empty:
         st.info(f"No data available for {station_name} in this timeframe.")
-        render_metar_dropdown(f"{tab_name}_{station_name}_empty")
+        render_metar_dropdown(metar_station)
         return
 
     plot_df = df.copy()
@@ -286,7 +291,7 @@ def render_station_charts(df, station_name, tab_name):
             )
 
     # Collapsible METAR dropdown under the humidity chart
-    render_metar_dropdown(f"{prefix}_metar")
+    render_metar_dropdown(metar_station)
 
     if press_col:
         plot_df[press_col] = (
@@ -417,16 +422,16 @@ def render_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             render_station_charts(
-                filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key
+                filter_by_duration(df_lacrosse, duration_key), "La Crosse", duration_key, metar_station="KSQL"
             )
         with c2:
             render_station_charts(
-                filter_by_duration(df_tempest, duration_key), "Tempest", duration_key
+                filter_by_duration(df_tempest, duration_key), "Tempest", duration_key, metar_station="KSFO"
             )
 
     elif station_view == "🛠️ DIY BME280 Station":
         render_station_charts(
-            filter_by_duration(df_diy, duration_key), "DIY Station", duration_key
+            filter_by_duration(df_diy, duration_key), "DIY Station", duration_key, metar_station="KSQL"
         )
 
 

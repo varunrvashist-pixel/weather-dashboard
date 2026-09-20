@@ -6,6 +6,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 st.set_page_config(page_title="Weather Station Dashboard", layout="wide")
@@ -15,9 +16,55 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"
-TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"
-DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
+LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"[cite: 2]
+TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"[cite: 2]
+DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"[cite: 2]
+
+
+@st.cache_data(ttl=300)
+def get_ksql_metar():
+    url = "https://aviationweather.gov/api/data/metar"
+    params = {"ids": "KSQL", "format": "json"}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+        if data:
+            return data[0]
+    except Exception:
+        return None
+    return None
+
+
+def render_metar_dropdown(unique_key):
+    obs = get_ksql_metar()
+    with st.expander("🛫 KSQL Airport Reference (METAR)"):
+        if not obs:
+            st.write("METAR data currently unavailable.")
+            return
+
+        temp_c = obs.get("temp")
+        temp_f = round((temp_c * 9 / 5) + 32, 1) if temp_c is not None else "N/A"
+
+        dewp_c = obs.get("dewp")
+        dewp_f = round((dewp_c * 9 / 5) + 32, 1) if dewp_c is not None else "N/A"
+
+        wspd_kt = obs.get("wspd")
+        wspd_mph = (
+            round(wspd_kt * 1.15078, 1) if wspd_kt is not None else "N/A"
+        )
+
+        altim_mb = obs.get("altim", "N/A")
+        wdir = obs.get("wdir", "N/A")
+        fltcat = obs.get("fltcat", "N/A")
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Airport Temp", f"{temp_f} °F")
+        col2.metric("Wind", f"{wspd_mph} mph @ {wdir}°")
+        col3.metric("Dew Point", f"{dewp_f} °F")
+        col4.metric("Altimeter", f"{altim_mb} hPa")
+
+        st.caption(f"**Flight Category:** {fltcat}")
+        st.code(obs.get("rawOb", ""), language="text")
 
 
 def get_google_sheets_client():
@@ -112,6 +159,7 @@ def filter_by_duration(df, duration):
 def render_station_charts(df, station_name, tab_name):
     if df.empty:
         st.info(f"No data available for {station_name} in this timeframe.")
+        render_metar_dropdown(f"{tab_name}_{station_name}_empty")
         return
 
     plot_df = df.copy()
@@ -236,6 +284,9 @@ def render_station_charts(df, station_name, tab_name):
                 config=chart_config,
                 key=f"{prefix}_hum_chart",
             )
+
+    # Collapsible METAR dropdown under the humidity chart
+    render_metar_dropdown(f"{prefix}_metar")
 
     if press_col:
         plot_df[press_col] = (

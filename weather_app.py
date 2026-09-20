@@ -37,7 +37,7 @@ def get_metar_data(station_code="KSQL"):
 
 def render_metar_dropdown(station_code="KSQL"):
     obs = get_metar_data(station_code)
-    label = f"🛫 {station_code} Airport Reference (METAR)"
+    label = f"🛫 {station_code} Airport Reference (METAR & Fog Indicators)"
 
     with st.expander(label):
         if not obs:
@@ -67,6 +67,11 @@ def render_metar_dropdown(station_code="KSQL"):
         dewp_c = obs.get("dewp")
         dewp_f = f"{round((dewp_c * 9 / 5) + 32, 1)}°F" if dewp_c is not None else "N/A"
 
+        spread_str = "N/A"
+        if temp_c is not None and dewp_c is not None:
+            spread_f = round((temp_c - dewp_c) * 9 / 5, 1)
+            spread_str = f"{spread_f}°F"
+
         wspd_kt = obs.get("wspd")
         wdir = obs.get("wdir")
         if wspd_kt is not None:
@@ -75,16 +80,35 @@ def render_metar_dropdown(station_code="KSQL"):
         else:
             wind_str = "N/A"
 
+        visib = obs.get("visib", "N/A")
+        visib_str = f"{visib} SM" if visib != "N/A" else "N/A"
+
+        clouds = obs.get("clouds", [])
+        ceiling = "Clear / None"
+        for layer in clouds:
+            cover = layer.get("cover")
+            base = layer.get("base")
+            if cover in ["BKN", "OVC"]:
+                ceiling = f"{cover} at {base} ft"
+                break
+            elif cover in ["FEW", "SCT"] and ceiling == "Clear / None":
+                ceiling = f"{cover} at {base} ft"
+
         altim_mb = f"{obs.get('altim')} hPa" if obs.get("altim") else "N/A"
         fltcat = obs.get("fltcat", "N/A")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Temp", temp_f)
-        col2.metric("Wind", wind_str)
-        col3.metric("Dew Point", dewp_f)
-        col4.metric("Pressure", altim_mb)
+        col2.metric("Dew Point", dewp_f)
+        col3.metric("T-Td Spread", spread_str, help="Spread ≤ 3°F indicates high fog probability")
+        col4.metric("Wind", wind_str)
 
-        st.caption(f"**Flight Category:** {fltcat}")
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("Visibility", visib_str)
+        col6.metric("Cloud / Ceiling", ceiling)
+        col7.metric("Pressure", altim_mb)
+        col8.metric("Flight Cat", fltcat)
+
         st.code(obs.get("rawOb", ""), language="text")
 
 

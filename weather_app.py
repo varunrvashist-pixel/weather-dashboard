@@ -4,6 +4,7 @@ import os
 import re
 import gspread
 from google.oauth2.service_account import Credentials
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import requests
@@ -199,6 +200,102 @@ def filter_by_duration(df, duration):
         return temp_df
 
     return temp_df[temp_df["Timestamp"] >= cutoff].copy()
+
+
+def analog_forecast(df, hours_ahead=2):
+    """Predicts weather by finding the most similar past days at this hour in your sheet history."""
+    if len(df) < 50:
+        return None, "Need at least a few days of data to find matching historical patterns."
+
+    df_clean = df.sort_values("Timestamp").copy()
+    current = df_clean.iloc[-1]
+    curr_time = current["Timestamp"]
+
+    t_col = find_col(df_clean, ["Temperature", "Temp", "Outdoor Temp", "Air Temp", "Temp (F)", "temp_f"])
+    h_col = find_col(df_clean, ["Humidity (%)", "Humidity", "Outdoor Humidity", "Relative Humidity", "hum"])
+    p_col = find_col(df_clean, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"])
+
+    if not t_col or not h_col:
+        return None, "Required temperature and humidity columns not found."
+
+    try:
+        curr_t = float(str(current[t_col]).replace("°F", "").replace("F", "").strip())
+        curr_h = float(str(current[h_col]).replace("%", "").strip())
+        curr_p = float(str(current[p_col]).replace("hPa", "").strip()) if p_col and pd.notna(current[p_col]) else 1013.25
+    except Exception:
+        return None, "Error parsing current weather readings."
+
+    # Exclude the last 12 hours so it matches historical past days, not earlier today
+    past_df = df_clean[df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=12))].copy()
+
+    # Match rows around the same hour of day (+/- 1 hr)
+    target_hour = curr_time.hour
+    past_df["hour_diff"] = (past_df["Timestamp"].dt.hour - target_hour).abs()
+    candidates = past_df[(past_df["hour_diff"] <= 1) | (past_df["hour_diff"] >= 23)].copy()
+
+    if len(candidates) < 3:
+        return None, "Not enough matching hours logged in past history yet."
+
+    candidates["num_t"] = pd.to_numeric(
+        candidates[t_col].astype(str).str.replace("°F", "", regex=False).str.replace("F", "", regex=False).str.strip(),
+        errors="coerce"
+    )
+    candidates["num_h"] = pd.to_numeric(
+        candidates[h_col].astype(str).str.replace("%", "", regex=False).str.strip(),
+        errors="coerce"
+    )
+    candidates = candidates.dropna(subset=["num_t", "num_h"])
+
+    if candidates.empty:
+        return None, "No valid historical readings found to compare."
+
+    # Euclidean distance metric (Similarity Score)
+    candidates["diff"] = np.sqrt((candidates["num_t"] - curr_t) ** 2 + (candidates["num_h"] - curr_h) ** 2)
+    best_matches = candidates.nsmallest(5, "diff")
+
+    future_temps = []
+    future_hums = []
+
+    for _, match_row in best_matches.iterrows():
+        match_time = match_row["Timestamp"]
+        target_future = match_time + pd.Timedelta(hours=hours_ahead)
+
+        future_window = df_clean[
+            (df_clean["Timestamp"] >= target_future - pd.Timedelta(minutes=30)) &
+            (df_clean["Timestamp"] <= target_future + pd.Timedelta(minutes=30))
+        ]
+        if not future_window.empty:
+            val_t = pd.to_numeric(
+                str(future_window.iloc[0][t_col]).replace("°F", "").replace("F", "").strip(),
+                errors="coerce"
+            )
+            val_h = pd.to_numeric(
+                str(future_window.iloc[0][h_col]).replace("%", "").strip(),
+                errors="coerce"
+            )
+            if pd.notna(val_t):
+                future_temps.append(val_t)
+            if pd.notna(val_h):
+                future_hums.append(val_h)
+
+    if not future_temps:
+        return None, "Matching historical moments found, but lacked follow-up readings."
+
+    pred_t = round(float(np.mean(future_temps)), 1)
+    pred_h = round(float(np.mean(future_hums)), 1)
+    
+    # Fog propensity: High if predicted humidity is near saturation (>88%)
+    fog_flag = "High" if pred_h >= 88 else ("Moderate" if pred_h >= 80 else "Low")
+
+    return {
+        "pred_temp": pred_t,
+        "pred_hum": pred_h,
+        "delta_temp": round(pred_t - curr_t, 1),
+        "delta_hum": round(pred_h - curr_h, 1),
+        "fog_risk": fog_flag,
+        "matches": len(future_temps),
+        "closest_date": best_matches.iloc[0]["Timestamp"].strftime("%b %d, %Y"),
+    }, None
 
 
 def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
@@ -432,6 +529,31 @@ def render_dashboard():
             st.caption(f"Last updated: {format_display_time(latest['Timestamp'])}")
         else:
             st.warning("No data found for DIY station.")
+
+    # Analog / Historical Pattern Forecaster Card
+    active_df = df_tempest if station_view == "⚡ La Crosse & Tempest" else df_diy
+    if not active_df.empty:
+        forecast, err = analog_forecast(active_df, hours_ahead=2)
+        if forecast:
+            st.divider()
+            with st.container():
+                st.markdown("#### 🔮 Historical Pattern Forecast (+2 Hours)")
+                fc1, fc2, fc3, fc4 = st.columns(4)
+                fc1.metric(
+                    "Projected Temp",
+                    f"{forecast['pred_temp']}°F",
+                    delta=f"{forecast['delta_temp']:+}°F",
+                )
+                fc2.metric(
+                    "Projected Humidity",
+                    f"{forecast['pred_hum']}%",
+                    delta=f"{forecast['delta_hum']:+}%",
+                )
+                fc3.metric("Fog Propensity", forecast["fog_risk"])
+                fc4.metric("Matching Days", f"{forecast['matches']} days")
+                st.caption(
+                    f"Analyzed against similar past days in your sheet (closest pattern: **{forecast['closest_date']}**)."
+                )
 
     st.divider()
 

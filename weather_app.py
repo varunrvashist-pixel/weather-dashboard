@@ -311,7 +311,7 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df, station_name="tempest"):
-  """Extracts temperature, wind, humidity, and dew point with positional fallbacks."""
+  """Extracts standard temperature, wind, humidity, and pressure metrics."""
   if df.empty:
     return None
 
@@ -356,7 +356,6 @@ def extract_station_metrics(df, station_name="tempest"):
       df, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"]
   )
 
-  # Column position fallbacks (col 1=Temp, col 2=Wind, col 3=Humidity)
   raw_t = latest[t_col] if t_col else (latest.iloc[1] if len(latest) > 1 else None)
   raw_w = latest[w_col] if w_col else (latest.iloc[2] if len(latest) > 2 else None)
   raw_h = latest[h_col] if h_col else (latest.iloc[3] if len(latest) > 3 else None)
@@ -367,27 +366,18 @@ def extract_station_metrics(df, station_name="tempest"):
   val_h = clean_float(raw_h)
   val_p = clean_float(raw_p)
 
-  dew_pt = compute_dew_point(val_t, val_h)
-  spread = (
-      round(val_t - dew_pt, 1)
-      if (val_t is not None and dew_pt is not None)
-      else None
-  )
-
   return {
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
       "wind_str": f"{val_w} mph" if val_w is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
-      "dew_str": f"{dew_pt} °F" if dew_pt is not None else "N/A",
-      "spread_str": f"{spread}° spread" if spread is not None else None,
       "time_str": format_display_time(latest["Timestamp"]),
   }
 
 
-# ---------------- ANALOG FORECAST (WITH PROJECTED DEW POINT) ----------------
+# ---------------- ANALOG FORECAST (TEMPEST DRIVEN) ----------------
 def analog_forecast(df, hours_ahead=2):
-  """Predicts weather and dew point by finding matching historical patterns."""
+  """Predicts weather and dew point strictly using Tempest data."""
   if len(df) < 30:
     return (
         None,
@@ -433,7 +423,7 @@ def analog_forecast(df, hours_ahead=2):
   curr_h = clean_float(raw_curr_h)
 
   if curr_t is None or curr_h is None:
-    return None, "Current temperature or humidity readings could not be parsed."
+    return None, "Current Tempest temperature or humidity could not be parsed."
 
   curr_dew = compute_dew_point(curr_t, curr_h)
 
@@ -448,7 +438,7 @@ def analog_forecast(df, hours_ahead=2):
   ].copy()
 
   if len(candidates) < 2:
-    return None, "Not enough matching hours logged in past history yet."
+    return None, "Not enough matching hours logged in Tempest history yet."
 
   t_target = t_col if t_col else df_clean.columns[1]
   h_target = h_col if h_col else df_clean.columns[3]
@@ -733,16 +723,10 @@ def render_dashboard():
       st.subheader("🏡 La Crosse")
       m_lacrosse = extract_station_metrics(df_lacrosse, "lacrosse")
       if m_lacrosse:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Temp", m_lacrosse["temp_str"])
         m2.metric("Wind", m_lacrosse["wind_str"])
         m3.metric("Humidity", m_lacrosse["hum_str"])
-        m4.metric(
-            "Dew Point",
-            m_lacrosse["dew_str"],
-            delta=m_lacrosse["spread_str"],
-            delta_color="inverse" if m_lacrosse["spread_str"] else "normal",
-        )
         st.caption(f"Last updated: {m_lacrosse['time_str']}")
       else:
         st.warning("No data found for La Crosse station.")
@@ -751,16 +735,10 @@ def render_dashboard():
       st.subheader("⚡ Tempest")
       m_tempest = extract_station_metrics(df_tempest, "tempest")
       if m_tempest:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Temp", m_tempest["temp_str"])
         m2.metric("Wind", m_tempest["wind_str"])
         m3.metric("Humidity", m_tempest["hum_str"])
-        m4.metric(
-            "Dew Point",
-            m_tempest["dew_str"],
-            delta=m_tempest["spread_str"],
-            delta_color="inverse" if m_tempest["spread_str"] else "normal",
-        )
         st.caption(f"Last updated: {m_tempest['time_str']}")
       else:
         st.warning("No data found for Tempest station.")
@@ -769,16 +747,10 @@ def render_dashboard():
     st.subheader("🛠️ DIY BME280 Station")
     m_diy = extract_station_metrics(df_diy, "diy")
     if m_diy:
-      m1, m2, m3, m4 = st.columns(4)
+      m1, m2, m3 = st.columns(3)
       m1.metric("Temp", m_diy["temp_str"])
       m2.metric("Humidity", m_diy["hum_str"])
       m3.metric("Pressure", m_diy["press_str"])
-      m4.metric(
-          "Dew Point",
-          m_diy["dew_str"],
-          delta=m_diy["spread_str"],
-          delta_color="inverse" if m_diy["spread_str"] else "normal",
-      )
       st.caption(f"Last updated: {m_diy['time_str']}")
     else:
       st.warning("No data found for DIY station.")
@@ -806,14 +778,16 @@ def render_dashboard():
           " that traps marine fog low along the Peninsula."
       )
 
-  # ---------------- HISTORICAL PATTERN FORECAST CARD (5 COLUMNS) ----------------
-  active_df = df_tempest if station_view == "⚡ La Crosse & Tempest" else df_diy
-  if not active_df.empty:
-    forecast, err = analog_forecast(active_df, hours_ahead=2)
+  # ---------------- HISTORICAL PATTERN FORECAST CARD (DRIVEN BY TEMPEST) ----------------
+  if not df_tempest.empty:
+    forecast, err = analog_forecast(df_tempest, hours_ahead=2)
     if forecast:
       st.divider()
       with st.container():
-        st.markdown("#### 🔮 Historical Pattern Forecast (+2 Hours)")
+        st.markdown(
+            "#### 🔮 Historical Pattern Forecast (+2 Hours) — *Tempest"
+            " Analysis*"
+        )
         fc1, fc2, fc3, fc4, fc5 = st.columns(5)
         fc1.metric(
             "Projected Temp",
@@ -834,15 +808,15 @@ def render_dashboard():
             ),
             delta=(
                 f"{forecast['delta_dew']:+}°F"
-                if forecast["delta_dew"] is not None
+                if forecast["pred_dew"] is not None
                 else None
             ),
         )
         fc4.metric("Fog Propensity", forecast["fog_risk"])
         fc5.metric("Matching Days", f"{forecast['matches']} days")
         st.caption(
-            "Analyzed against similar past days in your sheet (closest pattern:"
-            f" **{forecast['closest_date']}**)."
+            "Analyzed against similar past days in your Tempest sheet (closest"
+            f" pattern: **{forecast['closest_date']}**)."
         )
     elif err:
       st.caption(f"Forecast model info: {err}")

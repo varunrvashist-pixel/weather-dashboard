@@ -609,7 +609,14 @@ def analog_forecast(df, hours_ahead=2):
 
 # ---------------- SLEEK THEMED CHARTS ----------------
 def render_styled_chart(
-    clean_df, col_name, title, color_hex, fill_rgba, tick_format, day_x_range
+    clean_df,
+    col_name,
+    title,
+    color_hex,
+    fill_rgba,
+    tick_format,
+    day_x_range,
+    y_range=None,
 ):
   fig = px.line(clean_df, x="Timestamp", y=col_name, title=title)
   fig.update_traces(
@@ -618,6 +625,15 @@ def render_styled_chart(
       fillcolor=fill_rgba,
       hovertemplate="%{x|%b %d, %-I:%M %p}<br><b>%{y}</b><extra></extra>",
   )
+  yaxis_dict = dict(
+      showgrid=True,
+      gridcolor="rgba(240,246,252,0.06)",
+      color="#8b949e",
+      zeroline=False,
+  )
+  if y_range:
+    yaxis_dict["range"] = y_range
+
   layout_args = dict(
       paper_bgcolor="rgba(0,0,0,0)",
       plot_bgcolor="rgba(0,0,0,0)",
@@ -630,12 +646,7 @@ def render_styled_chart(
           color="#8b949e",
           linecolor="rgba(240,246,252,0.1)",
       ),
-      yaxis=dict(
-          showgrid=True,
-          gridcolor="rgba(240,246,252,0.06)",
-          color="#8b949e",
-          zeroline=False,
-      ),
+      yaxis=yaxis_dict,
   )
   if day_x_range:
     layout_args["xaxis_range"] = day_x_range
@@ -777,34 +788,41 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
   render_metar_dropdown(metar_station)
 
+  # Barometric Pressure Chart (Soft Purple)
   if press_col:
-    plot_df[press_col] = (
-        plot_df[press_col]
-        .astype(str)
-        .str.replace("hPa", "", regex=False)
-        .str.strip()
-    )
-    plot_df[press_col] = pd.to_numeric(plot_df[press_col], errors="coerce")
-    clean_press_df = plot_df.dropna(
-        subset=[press_col, "Timestamp"]
-    ).sort_values("Timestamp")
+      plot_df[press_col] = (
+          plot_df[press_col]
+          .astype(str)
+          .str.replace("hPa", "", regex=False)
+          .str.strip()
+      )
+      plot_df[press_col] = pd.to_numeric(plot_df[press_col], errors="coerce")
+      clean_press_df = plot_df.dropna(
+          subset=[press_col, "Timestamp"]
+      ).sort_values("Timestamp")
 
-    if not clean_press_df.empty:
-      fig_press = render_styled_chart(
-          clean_press_df,
-          press_col,
-          f"{station_name} • Barometric Pressure Trend",
-          "#a855f7",
-          "rgba(168, 85, 247, 0.08)",
-          tick_format,
-          day_x_range,
-      )
-      st.plotly_chart(
-          fig_press,
-          use_container_width=True,
-          config=chart_config,
-          key=f"{prefix}_press_chart",
-      )
+      if not clean_press_df.empty:
+        # Zoom tightly into 990-995 hPa for BME280 to show subtle micro-variations
+        press_y_range = (
+            [990.0, 995.0] if "diy" in station_name.lower() else None
+        )
+
+        fig_press = render_styled_chart(
+            clean_press_df,
+            press_col,
+            f"{station_name} • Barometric Pressure Trend",
+            "#a855f7",
+            "rgba(168, 85, 247, 0.08)",
+            tick_format,
+            day_x_range,
+            y_range=press_y_range,
+        )
+        st.plotly_chart(
+            fig_press,
+            use_container_width=True,
+            config=chart_config,
+            key=f"{prefix}_press_chart",
+        )
 
 
 # ---------------- DASHBOARD UI ----------------

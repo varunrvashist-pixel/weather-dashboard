@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import os
 import re
@@ -121,6 +121,26 @@ def compute_dew_point(temp_raw, hum_raw):
     return None
 
 
+def calculate_current_fog_risk(temp_raw, hum_raw):
+  """Calculates instantaneous fog propensity from live observations."""
+  t = clean_float(temp_raw)
+  h = clean_float(hum_raw)
+  if t is None or h is None:
+    return "Unknown", None, None
+
+  dew = compute_dew_point(t, h)
+  spread = round(t - dew, 1) if dew is not None else None
+
+  if (spread is not None and spread <= 2.5) or h >= 90:
+    risk = "High"
+  elif (spread is not None and spread <= 4.0) or h >= 82:
+    risk = "Moderate"
+  else:
+    risk = "Low"
+
+  return risk, dew, spread
+
+
 def get_live_badge(latest_ts):
   """Timezone-corrected reporting badge in Pacific Time."""
   if pd.isna(latest_ts):
@@ -144,7 +164,9 @@ def get_fog_badge(risk):
     return '<span style="background:rgba(248,81,73,0.18); color:#ff7b72; border:1px solid rgba(248,81,73,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">⚠️ HIGH RISK</span>'
   elif risk == "Moderate":
     return '<span style="background:rgba(210,153,34,0.18); color:#e3b341; border:1px solid rgba(210,153,34,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">⚡ MODERATE</span>'
-  return '<span style="background:rgba(46,160,67,0.18); color:#56d364; border:1px solid rgba(46,160,67,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">✓ LOW / CLEAR</span>'
+  elif risk == "Low":
+    return '<span style="background:rgba(46,160,67,0.18); color:#56d364; border:1px solid rgba(46,160,67,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">✓ LOW / CLEAR</span>'
+  return '<span style="color:#8b949e; font-size:0.85rem;">N/A</span>'
 
 
 def detect_pacific_high_pressure(df_history, current_pressure_hpa=None):
@@ -441,6 +463,8 @@ def extract_station_metrics(df, station_name="tempest"):
       "wind_str": f"{val_w} mph" if val_w is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
+      "raw_t": val_t,
+      "raw_h": val_h,
       "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }
@@ -448,7 +472,6 @@ def extract_station_metrics(df, station_name="tempest"):
 
 # ---------------- TEMPEST DYNAMIC HORIZON FORECAST ENGINE ----------------
 def analog_forecast(df, hours_ahead=2):
-  """Dynamic-horizon analog forecast locked exclusively to Tempest data."""
   min_records = 30 if hours_ahead < 24 else 60
   if len(df) < min_records:
     return (
@@ -499,7 +522,6 @@ def analog_forecast(df, hours_ahead=2):
 
   curr_dew = compute_dew_point(curr_t, curr_h)
 
-  # History window: must be older than the lookahead duration
   min_past_hours = max(12, hours_ahead + 2)
   past_df = df_clean[
       df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=min_past_hours))
@@ -807,6 +829,8 @@ def render_dashboard():
   df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
   df_diy = load_sheet_data(DIY_SHEET_ID)
 
+  m_tempest = extract_station_metrics(df_tempest, "tempest")
+
   # ---------------- OBSERVATION CARDS ----------------
   if station_view == "⚡ La Crosse & Tempest":
     col_lacrosse, col_tempest = st.columns(2)
@@ -834,7 +858,6 @@ def render_dashboard():
 
     with col_tempest:
       with st.container(border=True):
-        m_tempest = extract_station_metrics(df_tempest, "tempest")
         status_tag = (
             get_live_badge(m_tempest["raw_ts"]) if m_tempest else "⚪ Offline"
         )
@@ -871,7 +894,38 @@ def render_dashboard():
       else:
         st.warning("No live data available for DIY Station.")
 
-  # ---------------- SYNOPTIC PACIFIC HIGH INVERSION STATUS ----------------
+  # ---------------- 1. CURRENT TEMPEST FOG RISK & DEW POINT (BEFORE HIGH SYSTEM) ----------------
+  if m_tempest and m_tempest["raw_t"] is not None and m_tempest["raw_h"] is not None:
+    live_risk, live_dew, live_spread = calculate_current_fog_risk(
+        m_tempest["raw_t"], m_tempest["raw_h"]
+    )
+
+    with st.container(border=True):
+      st.markdown(
+          "<div style='display:flex; justify-content:space-between;"
+          " align-items:center; margin-bottom:0.75rem;'><span"
+          " style='font-weight:700; font-size:1.05rem;'>🌫️ Current Fog Risk &"
+          " Dew Point — *Tempest*</span>"
+          f" {get_fog_badge(live_risk)}</div>",
+          unsafe_allow_html=True,
+      )
+
+      col_f1, col_f2, col_f3 = st.columns(3)
+      col_f1.metric("Current Fog Risk", live_risk)
+      col_f2.metric(
+          "Current Dew Point",
+          f"{live_dew}°F" if live_dew is not None else "N/A",
+          delta=f"{live_spread}°F spread" if live_spread is not None else None,
+          delta_color="inverse",
+      )
+      col_f3.metric("Current Humidity", m_tempest["hum_str"])
+
+      st.caption(
+          f"Live calculation via Tempest: temperature is {live_spread}°F above"
+          " saturation. (Spreads ≤ 3°F indicate imminent fog formation)."
+      )
+
+  # ---------------- 2. SYNOPTIC PACIFIC HIGH INVERSION STATUS (AFTER / BEHIND) ----------------
   target_press_df = (
       df_diy
       if not df_diy.empty
@@ -889,12 +943,14 @@ def render_dashboard():
       )
     with h2:
       st.markdown(
-          "<span style='font-size:0.8rem; color:#8b949e; text-transform:uppercase; font-weight:600;'>Synoptic Inversion State</span>",
+          "<span style='font-size:0.8rem; color:#8b949e;"
+          " text-transform:uppercase; font-weight:600;'>Synoptic Inversion"
+          " State</span>",
           unsafe_allow_html=True,
       )
       st.write(high_p_info["detail"])
 
-  # ---------------- DYNAMIC FORECAST CARD WITH TIME HORIZON SWITCHER ----------------
+  # ---------------- 3. DYNAMIC FORECAST CARD WITH TIME HORIZON SWITCHER ----------------
   if not df_tempest.empty:
     with st.container(border=True):
       fc_header_l, fc_header_r = st.columns([2, 1])
@@ -905,17 +961,15 @@ def render_dashboard():
             unsafe_allow_html=True,
         )
       with fc_header_r:
-        # Segmented time horizon selector
         forecast_horizon_str = st.radio(
             "Forecast Horizon",
             ["+1 hr", "+3 hrs", "+5 hrs", "+24 hrs"],
-            index=1,  # Default to +3 hrs
+            index=1,
             horizontal=True,
             label_visibility="collapsed",
             key="forecast_horizon_picker",
         )
 
-      # Map selection to integer hours
       horizon_map = {"+1 hr": 1, "+3 hrs": 3, "+5 hrs": 5, "+24 hrs": 24}
       selected_hours = horizon_map.get(forecast_horizon_str, 3)
 
@@ -956,8 +1010,8 @@ def render_dashboard():
         fc4.metric("Pattern Matches", f"{forecast['matches']} days")
 
         st.caption(
-            f"Calculated via Tempest historical analogs ({forecast_horizon_str} ahead). Closest"
-            f" pattern matched: **{forecast['closest_date']}**."
+            f"Calculated via Tempest historical analogs ({forecast_horizon_str}"
+            f" ahead). Closest pattern matched: **{forecast['closest_date']}**."
         )
       elif err:
         st.caption(f"Forecast model info: {err}")

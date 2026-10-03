@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 import gspread
 import numpy as np
@@ -104,7 +105,7 @@ def clean_float(val):
 
 
 def compute_dew_point(temp_raw, hum_raw):
-  """Magnus-Tetens calculation for dew point in Fahrenheit."""
+  """Magnus-Tetens formula for dew point in Fahrenheit."""
   try:
     tf = clean_float(temp_raw)
     rh = clean_float(hum_raw)
@@ -121,11 +122,14 @@ def compute_dew_point(temp_raw, hum_raw):
 
 
 def get_live_badge(latest_ts):
-  """Generates an indicator badge showing recent reporting health."""
+  """Timezone-corrected reporting badge in Pacific Time."""
   if pd.isna(latest_ts):
     return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'
-  now = datetime.now()
-  diff_min = max(0, int((now - pd.to_datetime(latest_ts)).total_seconds() / 60))
+
+  now = datetime.now(ZoneInfo("America/Los_Angeles")).replace(tzinfo=None)
+  raw_time = pd.to_datetime(latest_ts).replace(tzinfo=None)
+
+  diff_min = max(0, int((now - raw_time).total_seconds() / 60))
   if diff_min <= 10:
     return '<span style="background:rgba(46,160,67,0.15); color:#3fb950; border:1px solid rgba(46,160,67,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🟢 LIVE</span>'
   elif diff_min <= 60:
@@ -136,7 +140,6 @@ def get_live_badge(latest_ts):
 
 
 def get_fog_badge(risk):
-  """Returns styled pill tag for fog probability."""
   if risk == "High":
     return '<span style="background:rgba(248,81,73,0.18); color:#ff7b72; border:1px solid rgba(248,81,73,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">⚠️ HIGH RISK</span>'
   elif risk == "Moderate":
@@ -145,7 +148,6 @@ def get_fog_badge(risk):
 
 
 def detect_pacific_high_pressure(df_history, current_pressure_hpa=None):
-  """Assesses Pacific High subsidence aloft."""
   if current_pressure_hpa is None and (
       df_history.empty or "Pressure" not in df_history.columns
   ):
@@ -380,7 +382,6 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df, station_name="tempest"):
-  """Extracts standard 3-metric profile for clean station cards."""
   if df.empty:
     return None
 
@@ -445,13 +446,14 @@ def extract_station_metrics(df, station_name="tempest"):
   }
 
 
-# ---------------- TEMPEST HISTORICAL ANALOG ENGINE ----------------
+# ---------------- TEMPEST DYNAMIC HORIZON FORECAST ENGINE ----------------
 def analog_forecast(df, hours_ahead=2):
-  """Historical pattern forecasting locked exclusively to Tempest data."""
-  if len(df) < 30:
+  """Dynamic-horizon analog forecast locked exclusively to Tempest data."""
+  min_records = 30 if hours_ahead < 24 else 60
+  if len(df) < min_records:
     return (
         None,
-        "Requires at least 2-3 days of Tempest logging to build match profiles.",
+        f"Requires more logged Tempest observations to project +{hours_ahead} hours.",
     )
 
   df_clean = df.sort_values("Timestamp").copy()
@@ -497,8 +499,10 @@ def analog_forecast(df, hours_ahead=2):
 
   curr_dew = compute_dew_point(curr_t, curr_h)
 
+  # History window: must be older than the lookahead duration
+  min_past_hours = max(12, hours_ahead + 2)
   past_df = df_clean[
-      df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=12))
+      df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=min_past_hours))
   ].copy()
 
   target_hour = curr_time.hour
@@ -508,7 +512,7 @@ def analog_forecast(df, hours_ahead=2):
   ].copy()
 
   if len(candidates) < 2:
-    return None, "Awaiting more matching diurnal time windows in your sheet."
+    return None, f"Not enough matching historical hours for +{hours_ahead}h."
 
   t_target = t_col if t_col else df_clean.columns[1]
   h_target = h_col if h_col else df_clean.columns[3]
@@ -527,14 +531,15 @@ def analog_forecast(df, hours_ahead=2):
 
   future_temps = []
   future_hums = []
+  window_margin = pd.Timedelta(minutes=30) if hours_ahead < 24 else pd.Timedelta(hours=1)
 
   for _, match_row in best_matches.iterrows():
     match_time = match_row["Timestamp"]
     target_future = match_time + pd.Timedelta(hours=hours_ahead)
 
     future_window = df_clean[
-        (df_clean["Timestamp"] >= target_future - pd.Timedelta(minutes=30))
-        & (df_clean["Timestamp"] <= target_future + pd.Timedelta(minutes=30))
+        (df_clean["Timestamp"] >= target_future - window_margin)
+        & (df_clean["Timestamp"] <= target_future + window_margin)
     ]
     if not future_window.empty:
       val_t = clean_float(future_window.iloc[0][t_target])
@@ -545,7 +550,7 @@ def analog_forecast(df, hours_ahead=2):
         future_hums.append(val_h)
 
   if not future_temps:
-    return None, "Found matches, but subsequent records were not available."
+    return None, f"Found matches, but subsequent +{hours_ahead}h records were not logged."
 
   pred_t = round(float(np.mean(future_temps)), 1)
   pred_h = round(float(np.mean(future_hums)), 1)
@@ -664,7 +669,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
   chart_config = {"responsive": True, "displayModeBar": False}
 
-  # Temperature Chart (Warm Amber / Coral)
   if temp_col:
     plot_df[temp_col] = (
         plot_df[temp_col]
@@ -694,7 +698,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
           key=f"{prefix}_temp_chart",
       )
 
-  # Wind Speed Chart (Cyan / Ice Blue)
   if wind_col:
     plot_df[wind_col] = (
         plot_df[wind_col]
@@ -724,7 +727,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
           key=f"{prefix}_wind_chart",
       )
 
-  # Humidity Chart (Vibrant Blue)
   if hum_col:
     plot_df[hum_col] = (
         plot_df[hum_col].astype(str).str.replace("%", "", regex=False).str.strip()
@@ -753,7 +755,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
   render_metar_dropdown(metar_station)
 
-  # Barometric Pressure Chart (Soft Purple)
   if press_col:
     plot_df[press_col] = (
         plot_df[press_col]
@@ -787,7 +788,6 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 # ---------------- DASHBOARD UI ----------------
 @st.fragment(run_every="180s")
 def render_dashboard():
-  # Top Header & View Selector
   top_l, top_r = st.columns([2, 1])
   with top_l:
     st.markdown(
@@ -807,7 +807,7 @@ def render_dashboard():
   df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
   df_diy = load_sheet_data(DIY_SHEET_ID)
 
-  # ---------------- STATION OBSERVATION CARDS ----------------
+  # ---------------- OBSERVATION CARDS ----------------
   if station_view == "⚡ La Crosse & Tempest":
     col_lacrosse, col_tempest = st.columns(2)
 
@@ -894,16 +894,38 @@ def render_dashboard():
       )
       st.write(high_p_info["detail"])
 
-  # ---------------- HISTORICAL PATTERN FORECAST (TEMPEST DRIVEN) ----------------
+  # ---------------- DYNAMIC FORECAST CARD WITH TIME HORIZON SWITCHER ----------------
   if not df_tempest.empty:
-    forecast, err = analog_forecast(df_tempest, hours_ahead=2)
-    if forecast:
-      with st.container(border=True):
+    with st.container(border=True):
+      fc_header_l, fc_header_r = st.columns([2, 1])
+      with fc_header_l:
         st.markdown(
-            "<div style='display:flex; justify-content:space-between;"
+            "<span style='font-weight:700; font-size:1.05rem;'>🔮 Historical"
+            " Pattern Forecast</span>",
+            unsafe_allow_html=True,
+        )
+      with fc_header_r:
+        # Segmented time horizon selector
+        forecast_horizon_str = st.radio(
+            "Forecast Horizon",
+            ["+1 hr", "+3 hrs", "+5 hrs", "+24 hrs"],
+            index=1,  # Default to +3 hrs
+            horizontal=True,
+            label_visibility="collapsed",
+            key="forecast_horizon_picker",
+        )
+
+      # Map selection to integer hours
+      horizon_map = {"+1 hr": 1, "+3 hrs": 3, "+5 hrs": 5, "+24 hrs": 24}
+      selected_hours = horizon_map.get(forecast_horizon_str, 3)
+
+      forecast, err = analog_forecast(df_tempest, hours_ahead=selected_hours)
+      if forecast:
+        st.markdown(
+            f"<div style='display:flex; justify-content:space-between;"
             " align-items:center; margin-bottom:0.75rem;'><span"
-            " style='font-weight:700; font-size:1.05rem;'>🔮 Historical Pattern"
-            " Forecast (+2 Hours)</span>"
+            " style='color:#8b949e; font-size:0.85rem;'>Tempest Pattern"
+            f" Projection ({forecast_horizon_str})</span>"
             f" {get_fog_badge(forecast['fog_risk'])}</div>",
             unsafe_allow_html=True,
         )
@@ -927,20 +949,20 @@ def render_dashboard():
             ),
             delta=(
                 f"{forecast['delta_dew']:+}°F"
-                if forecast["pred_dew"] is not None
+                if forecast["delta_dew"] is not None
                 else None
             ),
         )
         fc4.metric("Pattern Matches", f"{forecast['matches']} days")
 
         st.caption(
-            "Calculated strictly via Tempest historical analogs. Closest"
+            f"Calculated via Tempest historical analogs ({forecast_horizon_str} ahead). Closest"
             f" pattern matched: **{forecast['closest_date']}**."
         )
-    elif err:
-      st.caption(f"Forecast model info: {err}")
+      elif err:
+        st.caption(f"Forecast model info: {err}")
 
-  # ---------------- TIMEFRAME SELECTOR & TREND CHARTS ----------------
+  # ---------------- TIMEFRAME SELECTOR & CHARTS ----------------
   timeframe = st.radio(
       "Select Timeframe",
       ["Daily", "Weekly", "Monthly", "All Time"],

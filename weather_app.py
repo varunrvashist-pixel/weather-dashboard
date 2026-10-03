@@ -789,6 +789,7 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
   render_metar_dropdown(metar_station)
 
   # Barometric Pressure Chart (Soft Purple)
+  # Barometric Pressure Chart (Soft Purple)
   if press_col:
       plot_df[press_col] = (
           plot_df[press_col]
@@ -802,9 +803,9 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
       ).sort_values("Timestamp")
 
       if not clean_press_df.empty:
-        # Zoom tightly into 990-995 hPa for BME280 to show subtle micro-variations
+        # Custom zoom range for DIY BME280 pressure (985 to 1000 hPa)
         press_y_range = (
-            [990.0, 995.0] if "diy" in station_name.lower() else None
+            [985.0, 1000.0] if "diy" in station_name.lower() else None
         )
 
         fig_press = render_styled_chart(

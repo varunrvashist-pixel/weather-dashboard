@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -11,7 +11,67 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Weather Station Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Weather Station Dashboard",
+    page_icon="🌦️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ---------------- THEME & GLASSMORPHIC STYLING ----------------
+st.markdown(
+    """
+<style>
+    /* Dark background canvas */
+    .stApp {
+        background-color: #0d1117;
+        color: #e6edf3;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Elevated Glass Cards */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(22, 27, 34, 0.75) !important;
+        border: 1px solid rgba(240, 246, 252, 0.1) !important;
+        border-radius: 14px !important;
+        padding: 1.15rem !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        box-shadow: 0 8px 24px rgba(1, 4, 9, 0.4) !important;
+        margin-bottom: 0.85rem !important;
+    }
+
+    /* Metric Card Typography */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.85rem !important;
+        font-weight: 700 !important;
+        color: #f0f6fc !important;
+        letter-spacing: -0.02em !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #8b949e !important;
+        font-size: 0.82rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        font-weight: 600 !important;
+    }
+
+    /* Compact Divider */
+    hr {
+        margin: 1.5rem 0 !important;
+        border-color: rgba(240, 246, 252, 0.08) !important;
+    }
+
+    /* Expander Styling */
+    div[data-testid="stExpander"] {
+        background: rgba(22, 27, 34, 0.5) !important;
+        border: 1px solid rgba(240, 246, 252, 0.08) !important;
+        border-radius: 10px !important;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -25,7 +85,6 @@ DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
 
 # ---------------- MICROCLIMATE & DEW POINT HELPERS ----------------
 def clean_float(val):
-  """Safely strips degree signs, %, and text, returning a float or None."""
   if val is None or pd.isna(val):
     return None
   try:
@@ -45,7 +104,7 @@ def clean_float(val):
 
 
 def compute_dew_point(temp_raw, hum_raw):
-  """Safely computes dew point in Fahrenheit using the Magnus-Tetens approximation."""
+  """Magnus-Tetens calculation for dew point in Fahrenheit."""
   try:
     tf = clean_float(temp_raw)
     rh = clean_float(hum_raw)
@@ -61,8 +120,32 @@ def compute_dew_point(temp_raw, hum_raw):
     return None
 
 
+def get_live_badge(latest_ts):
+  """Generates an indicator badge showing recent reporting health."""
+  if pd.isna(latest_ts):
+    return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'
+  now = datetime.now()
+  diff_min = max(0, int((now - pd.to_datetime(latest_ts)).total_seconds() / 60))
+  if diff_min <= 10:
+    return '<span style="background:rgba(46,160,67,0.15); color:#3fb950; border:1px solid rgba(46,160,67,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🟢 LIVE</span>'
+  elif diff_min <= 60:
+    return f'<span style="background:rgba(210,153,34,0.15); color:#d29922; border:1px solid rgba(210,153,34,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🟡 {diff_min}m AGO</span>'
+  else:
+    hrs = diff_min // 60
+    return f'<span style="background:rgba(248,81,73,0.15); color:#f85149; border:1px solid rgba(248,81,73,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🔴 {hrs}h AGO</span>'
+
+
+def get_fog_badge(risk):
+  """Returns styled pill tag for fog probability."""
+  if risk == "High":
+    return '<span style="background:rgba(248,81,73,0.18); color:#ff7b72; border:1px solid rgba(248,81,73,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">⚠️ HIGH RISK</span>'
+  elif risk == "Moderate":
+    return '<span style="background:rgba(210,153,34,0.18); color:#e3b341; border:1px solid rgba(210,153,34,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">⚡ MODERATE</span>'
+  return '<span style="background:rgba(46,160,67,0.18); color:#56d364; border:1px solid rgba(46,160,67,0.45); padding:4px 12px; border-radius:16px; font-weight:700; font-size:0.85rem; letter-spacing:0.04em;">✓ LOW / CLEAR</span>'
+
+
 def detect_pacific_high_pressure(df_history, current_pressure_hpa=None):
-  """Detects Pacific High subsidence: high absolute pressure (>1016 hPa) and steady/rising trend."""
+  """Assesses Pacific High subsidence aloft."""
   if current_pressure_hpa is None and (
       df_history.empty or "Pressure" not in df_history.columns
   ):
@@ -99,29 +182,32 @@ def detect_pacific_high_pressure(df_history, current_pressure_hpa=None):
     return {
         "status": "Strong High (Inversion Lid)",
         "trend_3h": trend,
-        "detail": "Subsidence trapping marine layer low",
+        "detail": (
+            "Subsidence compressing marine layer; fog trapped low along"
+            " Peninsula"
+        ),
     }
   elif p_val >= 1014.0 and trend >= -0.5:
     return {
         "status": "Moderate High",
         "trend_3h": trend,
-        "detail": "Stable coastal high pressure",
+        "detail": "Stable coastal atmospheric pattern",
     }
   elif trend < -1.5:
     return {
         "status": "Falling Pressure",
         "trend_3h": trend,
-        "detail": "Trough or weak inversion",
+        "detail": "Approaching trough or weakening inversion layer",
     }
   else:
     return {
         "status": "Neutral",
         "trend_3h": trend,
-        "detail": "Standard baseline pressure",
+        "detail": "Normal baseline pressure",
     }
 
 
-# ---------------- METAR SERVICE ----------------
+# ---------------- METAR REGIONAL REFERENCE ----------------
 @st.cache_data(ttl=300)
 def get_metar_data(station_code="KSQL"):
   url = "https://aviationweather.gov/api/data/metar"
@@ -138,29 +224,12 @@ def get_metar_data(station_code="KSQL"):
 
 def render_metar_dropdown(station_code="KSQL"):
   obs = get_metar_data(station_code)
-  label = f"🛫 {station_code} Airport Reference (METAR & Fog Indicators)"
+  label = f"🛫 Regional Reference • {station_code} METAR & Inversion Check"
 
   with st.expander(label):
     if not obs:
-      st.write(f"METAR data currently unavailable for {station_code}.")
+      st.caption(f"METAR data currently unavailable for {station_code}.")
       return
-
-    st.markdown(
-        """
-            <style>
-            [data-testid="stMetricValue"] {
-                font-size: 1.15rem !important;
-            }
-            [data-testid="stMetricLabel"] {
-                font-size: 0.75rem !important;
-            }
-            div[data-testid="stCodeBlock"] pre {
-                font-size: 0.75rem !important;
-            }
-            </style>
-            """,
-        unsafe_allow_html=True,
-    )
 
     temp_c = obs.get("temp")
     temp_f = (
@@ -191,39 +260,39 @@ def render_metar_dropdown(station_code="KSQL"):
     visib_str = f"{visib} SM" if visib != "N/A" else "N/A"
 
     clouds = obs.get("clouds", [])
-    ceiling = "Clear / None"
+    ceiling = "Clear"
     for layer in clouds:
       cover = layer.get("cover")
       base = layer.get("base")
       if cover in ["BKN", "OVC"]:
-        ceiling = f"{cover} at {base} ft"
+        ceiling = f"{cover} @ {base} ft"
         break
-      elif cover in ["FEW", "SCT"] and ceiling == "Clear / None":
-        ceiling = f"{cover} at {base} ft"
+      elif cover in ["FEW", "SCT"] and ceiling == "Clear":
+        ceiling = f"{cover} @ {base} ft"
 
     altim_mb = f"{obs.get('altim')} hPa" if obs.get("altim") else "N/A"
     fltcat = obs.get("fltcat", "N/A")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Temp", temp_f)
-    col2.metric("Dew Point", dewp_f)
-    col3.metric(
-        "T-Td Spread",
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Airport Temp", temp_f)
+    c2.metric("Airport Dew Point", dewp_f)
+    c3.metric(
+        "T - Td Spread",
         spread_str,
-        help="Spread ≤ 3°F indicates high fog probability",
+        help="Spread ≤ 3°F indicates saturation & high fog likelihood",
     )
-    col4.metric("Wind", wind_str)
+    c4.metric("Airport Wind", wind_str)
 
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Visibility", visib_str)
-    col6.metric("Cloud / Ceiling", ceiling)
-    col7.metric("Pressure", altim_mb)
-    col8.metric("Flight Cat", fltcat)
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Visibility", visib_str)
+    c6.metric("Ceiling", ceiling)
+    c7.metric("Pressure", altim_mb)
+    c8.metric("Flight Category", fltcat)
 
     st.code(obs.get("rawOb", ""), language="text")
 
 
-# ---------------- GOOGLE SHEETS & DATA PROCESSING ----------------
+# ---------------- GOOGLE SHEETS & INGESTION ----------------
 def get_google_sheets_client():
   if os.path.exists("cloud_key.json"):
     creds = Credentials.from_service_account_file(
@@ -240,7 +309,7 @@ def get_google_sheets_client():
   except Exception:
     pass
 
-  st.error("Missing credentials. Please add GCP_KEY_BASE64 to Streamlit secrets.")
+  st.error("Missing GCP credentials. Please configure GCP_KEY_BASE64 in Streamlit secrets.")
   st.stop()
 
 
@@ -281,7 +350,7 @@ def load_sheet_data(sheet_id):
 def format_display_time(ts):
   if pd.isna(ts):
     return "N/A"
-  return pd.to_datetime(ts).strftime("%b %d, %Y, %-I:%M:%S %p")
+  return pd.to_datetime(ts).strftime("%b %d, %-I:%M:%S %p")
 
 
 def filter_by_duration(df, duration):
@@ -311,7 +380,7 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df, station_name="tempest"):
-  """Extracts standard temperature, wind, humidity, and pressure metrics."""
+  """Extracts standard 3-metric profile for clean station cards."""
   if df.empty:
     return None
 
@@ -371,17 +440,18 @@ def extract_station_metrics(df, station_name="tempest"):
       "wind_str": f"{val_w} mph" if val_w is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
+      "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }
 
 
-# ---------------- ANALOG FORECAST (TEMPEST DRIVEN) ----------------
+# ---------------- TEMPEST HISTORICAL ANALOG ENGINE ----------------
 def analog_forecast(df, hours_ahead=2):
-  """Predicts weather and dew point strictly using Tempest data."""
+  """Historical pattern forecasting locked exclusively to Tempest data."""
   if len(df) < 30:
     return (
         None,
-        "Need at least a few days of data to find matching historical patterns.",
+        "Requires at least 2-3 days of Tempest logging to build match profiles.",
     )
 
   df_clean = df.sort_values("Timestamp").copy()
@@ -438,7 +508,7 @@ def analog_forecast(df, hours_ahead=2):
   ].copy()
 
   if len(candidates) < 2:
-    return None, "Not enough matching hours logged in Tempest history yet."
+    return None, "Awaiting more matching diurnal time windows in your sheet."
 
   t_target = t_col if t_col else df_clean.columns[1]
   h_target = h_col if h_col else df_clean.columns[3]
@@ -448,7 +518,7 @@ def analog_forecast(df, hours_ahead=2):
   candidates = candidates.dropna(subset=["num_t", "num_h"])
 
   if candidates.empty:
-    return None, "No valid historical records found to match."
+    return None, "Historical records lack usable numeric observations."
 
   candidates["diff"] = np.sqrt(
       (candidates["num_t"] - curr_t) ** 2 + (candidates["num_h"] - curr_h) ** 2
@@ -475,10 +545,7 @@ def analog_forecast(df, hours_ahead=2):
         future_hums.append(val_h)
 
   if not future_temps:
-    return (
-        None,
-        "Matching historical moments found, but lacked follow-up readings.",
-    )
+    return None, "Found matches, but subsequent records were not available."
 
   pred_t = round(float(np.mean(future_temps)), 1)
   pred_h = round(float(np.mean(future_hums)), 1)
@@ -513,10 +580,45 @@ def analog_forecast(df, hours_ahead=2):
   }, None
 
 
-# ---------------- CHARTS ----------------
+# ---------------- SLEEK THEMED CHARTS ----------------
+def render_styled_chart(
+    clean_df, col_name, title, color_hex, fill_rgba, tick_format, day_x_range
+):
+  fig = px.line(clean_df, x="Timestamp", y=col_name, title=title)
+  fig.update_traces(
+      line=dict(color=color_hex, width=2.5),
+      fill="tozeroy",
+      fillcolor=fill_rgba,
+      hovertemplate="%{x|%b %d, %-I:%M %p}<br><b>%{y}</b><extra></extra>",
+  )
+  layout_args = dict(
+      paper_bgcolor="rgba(0,0,0,0)",
+      plot_bgcolor="rgba(0,0,0,0)",
+      font=dict(color="#8b949e", family="-apple-system, sans-serif"),
+      hovermode="x unified",
+      margin=dict(l=10, r=10, t=35, b=10),
+      xaxis=dict(
+          showgrid=False,
+          tickformat=tick_format,
+          color="#8b949e",
+          linecolor="rgba(240,246,252,0.1)",
+      ),
+      yaxis=dict(
+          showgrid=True,
+          gridcolor="rgba(240,246,252,0.06)",
+          color="#8b949e",
+          zeroline=False,
+      ),
+  )
+  if day_x_range:
+    layout_args["xaxis_range"] = day_x_range
+  fig.update_layout(**layout_args)
+  return fig
+
+
 def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
   if df.empty:
-    st.info(f"No data available for {station_name} in this timeframe.")
+    st.info(f"No logged data available for {station_name} in this timeframe.")
     render_metar_dropdown(metar_station)
     return
 
@@ -562,6 +664,7 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
   chart_config = {"responsive": True, "displayModeBar": False}
 
+  # Temperature Chart (Warm Amber / Coral)
   if temp_col:
     plot_df[temp_col] = (
         plot_df[temp_col]
@@ -575,20 +678,15 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
     )
 
     if not clean_temp_df.empty:
-      fig_temp = px.line(
+      fig_temp = render_styled_chart(
           clean_temp_df,
-          x="Timestamp",
-          y=temp_col,
-          title=f"{station_name} - Temperature Over Time",
+          temp_col,
+          f"{station_name} • Temperature Trend",
+          "#f97316",
+          "rgba(249, 115, 22, 0.08)",
+          tick_format,
+          day_x_range,
       )
-      layout_args = dict(
-          autosize=True,
-          margin=dict(l=20, r=20, t=40, b=20),
-          xaxis=dict(tickformat=tick_format),
-      )
-      if day_x_range:
-        layout_args["xaxis_range"] = day_x_range
-      fig_temp.update_layout(**layout_args)
       st.plotly_chart(
           fig_temp,
           use_container_width=True,
@@ -596,6 +694,7 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
           key=f"{prefix}_temp_chart",
       )
 
+  # Wind Speed Chart (Cyan / Ice Blue)
   if wind_col:
     plot_df[wind_col] = (
         plot_df[wind_col]
@@ -609,20 +708,15 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
     )
 
     if not clean_wind_df.empty:
-      fig_wind = px.line(
+      fig_wind = render_styled_chart(
           clean_wind_df,
-          x="Timestamp",
-          y=wind_col,
-          title=f"{station_name} - Wind Speed Over Time",
+          wind_col,
+          f"{station_name} • Wind Speed Trend",
+          "#06b6d4",
+          "rgba(6, 182, 212, 0.08)",
+          tick_format,
+          day_x_range,
       )
-      layout_args = dict(
-          autosize=True,
-          margin=dict(l=20, r=20, t=40, b=20),
-          xaxis=dict(tickformat=tick_format),
-      )
-      if day_x_range:
-        layout_args["xaxis_range"] = day_x_range
-      fig_wind.update_layout(**layout_args)
       st.plotly_chart(
           fig_wind,
           use_container_width=True,
@@ -630,6 +724,7 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
           key=f"{prefix}_wind_chart",
       )
 
+  # Humidity Chart (Vibrant Blue)
   if hum_col:
     plot_df[hum_col] = (
         plot_df[hum_col].astype(str).str.replace("%", "", regex=False).str.strip()
@@ -640,20 +735,15 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
     )
 
     if not clean_hum_df.empty:
-      fig_hum = px.line(
+      fig_hum = render_styled_chart(
           clean_hum_df,
-          x="Timestamp",
-          y=hum_col,
-          title=f"{station_name} - Humidity Over Time",
+          hum_col,
+          f"{station_name} • Relative Humidity Trend",
+          "#3b82f6",
+          "rgba(59, 130, 246, 0.08)",
+          tick_format,
+          day_x_range,
       )
-      layout_args = dict(
-          autosize=True,
-          margin=dict(l=20, r=20, t=40, b=20),
-          xaxis=dict(tickformat=tick_format),
-      )
-      if day_x_range:
-        layout_args["xaxis_range"] = day_x_range
-      fig_hum.update_layout(**layout_args)
       st.plotly_chart(
           fig_hum,
           use_container_width=True,
@@ -663,6 +753,7 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
   render_metar_dropdown(metar_station)
 
+  # Barometric Pressure Chart (Soft Purple)
   if press_col:
     plot_df[press_col] = (
         plot_df[press_col]
@@ -676,20 +767,15 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
     ).sort_values("Timestamp")
 
     if not clean_press_df.empty:
-      fig_press = px.line(
+      fig_press = render_styled_chart(
           clean_press_df,
-          x="Timestamp",
-          y=press_col,
-          title=f"{station_name} - Pressure Over Time",
+          press_col,
+          f"{station_name} • Barometric Pressure Trend",
+          "#a855f7",
+          "rgba(168, 85, 247, 0.08)",
+          tick_format,
+          day_x_range,
       )
-      layout_args = dict(
-          autosize=True,
-          margin=dict(l=20, r=20, t=40, b=20),
-          xaxis=dict(tickformat=tick_format),
-      )
-      if day_x_range:
-        layout_args["xaxis_range"] = day_x_range
-      fig_press.update_layout(**layout_args)
       st.plotly_chart(
           fig_press,
           use_container_width=True,
@@ -698,64 +784,94 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
       )
 
 
-# ---------------- MAIN DASHBOARD ----------------
+# ---------------- DASHBOARD UI ----------------
 @st.fragment(run_every="180s")
 def render_dashboard():
-  st.title("🌦️ Weather Station Dashboard")
-
-  station_view = st.radio(
-      "Station View",
-      [
-          "⚡ La Crosse & Tempest",
-          "🛠️ DIY BME280 Station",
-      ],
-      horizontal=True,
-  )
+  # Top Header & View Selector
+  top_l, top_r = st.columns([2, 1])
+  with top_l:
+    st.markdown(
+        "<h2 style='margin-bottom:0.2rem;'>🌦️ Weather Command Center</h2>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Real-Time Multi-Station Microclimate & Fog Prediction")
+  with top_r:
+    station_view = st.radio(
+        "Station View",
+        ["⚡ La Crosse & Tempest", "🛠️ DIY BME280 Station"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
   df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
   df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
   df_diy = load_sheet_data(DIY_SHEET_ID)
 
+  # ---------------- STATION OBSERVATION CARDS ----------------
   if station_view == "⚡ La Crosse & Tempest":
     col_lacrosse, col_tempest = st.columns(2)
 
     with col_lacrosse:
-      st.subheader("🏡 La Crosse")
-      m_lacrosse = extract_station_metrics(df_lacrosse, "lacrosse")
-      if m_lacrosse:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Temp", m_lacrosse["temp_str"])
-        m2.metric("Wind", m_lacrosse["wind_str"])
-        m3.metric("Humidity", m_lacrosse["hum_str"])
-        st.caption(f"Last updated: {m_lacrosse['time_str']}")
-      else:
-        st.warning("No data found for La Crosse station.")
+      with st.container(border=True):
+        m_lacrosse = extract_station_metrics(df_lacrosse, "lacrosse")
+        status_tag = (
+            get_live_badge(m_lacrosse["raw_ts"]) if m_lacrosse else "⚪ Offline"
+        )
+        st.markdown(
+            f"<div style='display:flex; justify-content:space-between;"
+            " align-items:center;'><b>🏡 La Crosse"
+            f" Station</b>{status_tag}</div>",
+            unsafe_allow_html=True,
+        )
+        if m_lacrosse:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_lacrosse["temp_str"])
+          m2.metric("Wind Speed", m_lacrosse["wind_str"])
+          m3.metric("Humidity", m_lacrosse["hum_str"])
+          st.caption(f"Latest observation: {m_lacrosse['time_str']}")
+        else:
+          st.warning("No live data available for La Crosse.")
 
     with col_tempest:
-      st.subheader("⚡ Tempest")
-      m_tempest = extract_station_metrics(df_tempest, "tempest")
-      if m_tempest:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Temp", m_tempest["temp_str"])
-        m2.metric("Wind", m_tempest["wind_str"])
-        m3.metric("Humidity", m_tempest["hum_str"])
-        st.caption(f"Last updated: {m_tempest['time_str']}")
-      else:
-        st.warning("No data found for Tempest station.")
+      with st.container(border=True):
+        m_tempest = extract_station_metrics(df_tempest, "tempest")
+        status_tag = (
+            get_live_badge(m_tempest["raw_ts"]) if m_tempest else "⚪ Offline"
+        )
+        st.markdown(
+            f"<div style='display:flex; justify-content:space-between;"
+            " align-items:center;'><b>⚡ Tempest"
+            f" Station</b>{status_tag}</div>",
+            unsafe_allow_html=True,
+        )
+        if m_tempest:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_tempest["temp_str"])
+          m2.metric("Wind Speed", m_tempest["wind_str"])
+          m3.metric("Humidity", m_tempest["hum_str"])
+          st.caption(f"Latest observation: {m_tempest['time_str']}")
+        else:
+          st.warning("No live data available for Tempest.")
 
   else:
-    st.subheader("🛠️ DIY BME280 Station")
-    m_diy = extract_station_metrics(df_diy, "diy")
-    if m_diy:
-      m1, m2, m3 = st.columns(3)
-      m1.metric("Temp", m_diy["temp_str"])
-      m2.metric("Humidity", m_diy["hum_str"])
-      m3.metric("Pressure", m_diy["press_str"])
-      st.caption(f"Last updated: {m_diy['time_str']}")
-    else:
-      st.warning("No data found for DIY station.")
+    with st.container(border=True):
+      m_diy = extract_station_metrics(df_diy, "diy")
+      status_tag = get_live_badge(m_diy["raw_ts"]) if m_diy else "⚪ Offline"
+      st.markdown(
+          f"<div style='display:flex; justify-content:space-between;"
+          f" align-items:center;'><b>🛠️ DIY BME280 Station</b>{status_tag}</div>",
+          unsafe_allow_html=True,
+      )
+      if m_diy:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Temperature", m_diy["temp_str"])
+        m2.metric("Humidity", m_diy["hum_str"])
+        m3.metric("Barometric Pressure", m_diy["press_str"])
+        st.caption(f"Latest observation: {m_diy['time_str']}")
+      else:
+        st.warning("No live data available for DIY Station.")
 
-  # ---------------- HIGH PRESSURE & SUBSIDENCE INDICATOR ----------------
+  # ---------------- SYNOPTIC PACIFIC HIGH INVERSION STATUS ----------------
   target_press_df = (
       df_diy
       if not df_diy.empty
@@ -763,32 +879,35 @@ def render_dashboard():
   )
   high_p_info = detect_pacific_high_pressure(target_press_df)
 
-  with st.container():
+  with st.container(border=True):
     h1, h2 = st.columns([1, 2])
     with h1:
       st.metric(
-          "North Pacific High System",
+          "Pacific High System",
           high_p_info["status"],
-          delta=f"{high_p_info['trend_3h']:+} hPa (3hr)",
+          delta=f"{high_p_info['trend_3h']:+} hPa (3hr trend)",
       )
     with h2:
-      st.caption(
-          f"**Atmospheric Inversion Status:** {high_p_info['detail']}. Strong"
-          " high pressure aloft pushes down from the Pacific, acting like a lid"
-          " that traps marine fog low along the Peninsula."
+      st.markdown(
+          "<span style='font-size:0.8rem; color:#8b949e; text-transform:uppercase; font-weight:600;'>Synoptic Inversion State</span>",
+          unsafe_allow_html=True,
       )
+      st.write(high_p_info["detail"])
 
-  # ---------------- HISTORICAL PATTERN FORECAST CARD (DRIVEN BY TEMPEST) ----------------
+  # ---------------- HISTORICAL PATTERN FORECAST (TEMPEST DRIVEN) ----------------
   if not df_tempest.empty:
     forecast, err = analog_forecast(df_tempest, hours_ahead=2)
     if forecast:
-      st.divider()
-      with st.container():
+      with st.container(border=True):
         st.markdown(
-            "#### 🔮 Historical Pattern Forecast (+2 Hours) — *Tempest"
-            " Analysis*"
+            "<div style='display:flex; justify-content:space-between;"
+            " align-items:center; margin-bottom:0.75rem;'><span"
+            " style='font-weight:700; font-size:1.05rem;'>🔮 Historical Pattern"
+            " Forecast (+2 Hours)</span>"
+            f" {get_fog_badge(forecast['fog_risk'])}</div>",
+            unsafe_allow_html=True,
         )
-        fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+        fc1, fc2, fc3, fc4 = st.columns(4)
         fc1.metric(
             "Projected Temp",
             f"{forecast['pred_temp']}°F",
@@ -812,38 +931,24 @@ def render_dashboard():
                 else None
             ),
         )
-        fc4.metric("Fog Propensity", forecast["fog_risk"])
-        fc5.metric("Matching Days", f"{forecast['matches']} days")
+        fc4.metric("Pattern Matches", f"{forecast['matches']} days")
+
         st.caption(
-            "Analyzed against similar past days in your Tempest sheet (closest"
-            f" pattern: **{forecast['closest_date']}**)."
+            "Calculated strictly via Tempest historical analogs. Closest"
+            f" pattern matched: **{forecast['closest_date']}**."
         )
     elif err:
       st.caption(f"Forecast model info: {err}")
 
-  st.divider()
-
+  # ---------------- TIMEFRAME SELECTOR & TREND CHARTS ----------------
   timeframe = st.radio(
       "Select Timeframe",
-      [
-          "📅 Daily",
-          "🗓️ Weekly",
-          "📆 Monthly",
-          "♾️ All Time",
-      ],
+      ["Daily", "Weekly", "Monthly", "All Time"],
       horizontal=True,
       label_visibility="collapsed",
   )
 
-  duration_key = (
-      "daily"
-      if "Daily" in timeframe
-      else (
-          "weekly"
-          if "Weekly" in timeframe
-          else ("monthly" if "Monthly" in timeframe else "all")
-      )
-  )
+  duration_key = timeframe.lower()
 
   if station_view == "⚡ La Crosse & Tempest":
     c1, c2 = st.columns(2)

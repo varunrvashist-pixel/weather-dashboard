@@ -804,8 +804,9 @@ def render_station_charts(df, station_name, tab_name, metar_station="KSQL"):
 
       if not clean_press_df.empty:
         # Custom zoom range for DIY BME280 pressure (985 to 1000 hPa)
+        # Custom zoom range for DIY BME280 pressure (985 to 1005 hPa)
         press_y_range = (
-            [985.0, 1000.0] if "diy" in station_name.lower() else None
+            [985.0, 1005.0] if "diy" in station_name.lower() else None
         )
 
         fig_press = render_styled_chart(

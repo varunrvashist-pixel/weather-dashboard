@@ -75,8 +75,16 @@ st.markdown(
         transition: all 0.2s ease-in-out;
     }
     div.stButton > button:hover {
-        border-color: #58a6ff !important;
-        color: #58a6ff !important;
+        border-color: #ff4b4b !important;
+        color: #ff4b4b !important;
+    }
+
+    /* Active / Selected Tab Style (Red) */
+    div.stButton > button[kind="primary"] {
+        background-color: #da3633 !important;
+        border-color: #f85149 !important;
+        color: #ffffff !important;
+        box-shadow: 0 0 10px rgba(218, 54, 51, 0.4) !important;
     }
 </style>
 """,
@@ -516,12 +524,26 @@ if 'current_page' not in st.session_state:
     st.session_state.current_page = "DIY_BME280"
 
 nav_col1, nav_col2, _ = st.columns([1, 1, 2])
+
 with nav_col1:
-    if st.button("🛠️ DIY BME280 Dashboard", use_container_width=True):
+    bme_active = (st.session_state.current_page == "DIY_BME280")
+    if st.button(
+        "🛠️ DIY BME280 Dashboard",
+        type="primary" if bme_active else "secondary",
+        use_container_width=True,
+    ):
         st.session_state.current_page = "DIY_BME280"
+        st.rerun()
+
 with nav_col2:
-    if st.button("📊 Station Comparison", use_container_width=True):
+    comp_active = (st.session_state.current_page == "COMPARISON")
+    if st.button(
+        "📊 Station Comparison",
+        type="primary" if comp_active else "secondary",
+        use_container_width=True,
+    ):
         st.session_state.current_page = "COMPARISON"
+        st.rerun()
 
 st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 1.5rem;'>", unsafe_allow_html=True)
 

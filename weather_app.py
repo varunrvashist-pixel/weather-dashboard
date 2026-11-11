@@ -17,7 +17,7 @@ st.set_page_config(
     page_title="Weather Station Command Center",
     page_icon="🌦️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ---------------- THEME & GLASSMORPHIC STYLING ----------------
@@ -62,6 +62,21 @@ st.markdown(
     hr {
         margin: 1.5rem 0 !important;
         border-color: rgba(240, 246, 252, 0.08) !important;
+    }
+    
+    /* Top Navigation Button Styling */
+    div.stButton > button {
+        border-radius: 8px !important;
+        border: 1px solid rgba(240, 246, 252, 0.2) !important;
+        background-color: rgba(22, 27, 34, 0.8) !important;
+        color: #e6edf3 !important;
+        font-weight: 600 !important;
+        padding: 0.5rem 1rem !important;
+        transition: all 0.2s ease-in-out;
+    }
+    div.stButton > button:hover {
+        border-color: #58a6ff !important;
+        color: #58a6ff !important;
     }
 </style>
 """,
@@ -250,7 +265,6 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df):
-  """Extracts core current metrics robustly for any station."""
   if df.empty:
     return None
 
@@ -497,13 +511,26 @@ def render_combined_chart(df_dict, col_options, title, y_suffix, tick_format, da
   return fig
 
 
-# ---------------- MAIN APP NAVIGATION & DASHBOARD ----------------
-page_selection = st.sidebar.radio("Navigation", ["🛠️ DIY BME280 Dashboard", "📊 Station Comparison"])
+# ---------------- MAIN APP NAVIGATION BUTTONS ----------------
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = "DIY_BME280"
 
+nav_col1, nav_col2, _ = st.columns([1, 1, 2])
+with nav_col1:
+    if st.button("🛠️ DIY BME280 Dashboard", use_container_width=True):
+        st.session_state.current_page = "DIY_BME280"
+with nav_col2:
+    if st.button("📊 Station Comparison", use_container_width=True):
+        st.session_state.current_page = "COMPARISON"
+
+st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 1.5rem;'>", unsafe_allow_html=True)
+
+
+# ---------------- RENDER SELECTED DASHBOARD ----------------
 @st.fragment(run_every="180s")
 def render_dashboard(selected_page):
   
-  if selected_page == "🛠️ DIY BME280 Dashboard":
+  if selected_page == "DIY_BME280":
     st.markdown("<h2 style='margin-bottom:0.2rem;'>🌦️ DIY Weather Command Center</h2>", unsafe_allow_html=True)
     st.caption("Real-Time Microclimate Monitoring & Fog Prediction via BME280")
 
@@ -639,4 +666,4 @@ def render_dashboard(selected_page):
     fig_rain = render_combined_chart(df_dict_rain, ["Rain", "Rainfall", "Precipitation"], "Rainfall Trend", "in", tick_format, day_x_range)
     if fig_rain: st.plotly_chart(fig_rain, use_container_width=True, config=chart_config)
 
-render_dashboard(page_selection)
+render_dashboard(st.session_state.current_page)

@@ -9,14 +9,15 @@ import gspread
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="DIY Weather Station Dashboard",
+    page_title="Weather Station Command Center",
     page_icon="🌦️",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ---------------- THEME & GLASSMORPHIC STYLING ----------------
@@ -72,7 +73,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# We are focusing purely on the BME280 sheet now
+LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"
+TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"
 DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
 
 
@@ -98,7 +100,6 @@ def clean_float(val):
 
 
 def compute_dew_point(temp_raw, hum_raw):
-  """Magnus-Tetens formula for dew point in Fahrenheit."""
   try:
     tf = clean_float(temp_raw)
     rh = clean_float(hum_raw)
@@ -115,7 +116,6 @@ def compute_dew_point(temp_raw, hum_raw):
 
 
 def get_live_badge(latest_ts):
-  """Timezone-corrected reporting badge in Pacific Time."""
   if pd.isna(latest_ts):
     return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'
 
@@ -143,7 +143,6 @@ def get_fog_badge(risk):
 
 
 def detect_pacific_high_pressure(df_history):
-  """Calculates Pacific High inversion status quietly in the background."""
   if df_history.empty:
     return {"status": "Neutral"}
 
@@ -154,10 +153,7 @@ def detect_pacific_high_pressure(df_history):
 
   if press_col and not df_history.empty:
     numeric_p = pd.to_numeric(
-        df_history[press_col]
-        .astype(str)
-        .str.replace("hPa", "", regex=False)
-        .str.strip(),
+        df_history[press_col].astype(str).str.replace("hPa", "", regex=False).str.strip(),
         errors="coerce",
     ).dropna()
     if len(numeric_p) >= 2:
@@ -176,9 +172,7 @@ def detect_pacific_high_pressure(df_history):
 # ---------------- GOOGLE SHEETS & INGESTION ----------------
 def get_google_sheets_client():
   if os.path.exists("cloud_key.json"):
-    creds = Credentials.from_service_account_file(
-        "cloud_key.json", scopes=SCOPES
-    )
+    creds = Credentials.from_service_account_file("cloud_key.json", scopes=SCOPES)
     return gspread.authorize(creds)
 
   try:
@@ -214,9 +208,7 @@ def load_sheet_data(sheet_id):
       return pd.DataFrame()
     df = pd.DataFrame(records)
 
-    time_col = find_col(
-        df, ["Date/Time", "Timestamp", "Date", "Time", "Datetime", "Logged At"]
-    )
+    time_col = find_col(df, ["Date/Time", "Timestamp", "Date", "Time", "Datetime", "Logged At"])
     if time_col:
       df["Timestamp"] = pd.to_datetime(df[time_col], errors="coerce")
       df = df.dropna(subset=["Timestamp"])
@@ -244,10 +236,7 @@ def filter_by_duration(df, duration):
   if duration == "daily":
     start_of_day = latest_time.normalize()
     end_of_day = start_of_day + pd.Timedelta(days=1)
-    return temp_df[
-        (temp_df["Timestamp"] >= start_of_day)
-        & (temp_df["Timestamp"] < end_of_day)
-    ].copy()
+    return temp_df[(temp_df["Timestamp"] >= start_of_day) & (temp_df["Timestamp"] < end_of_day)].copy()
   elif duration == "weekly":
     cutoff = latest_time - pd.Timedelta(days=7)
   elif duration == "monthly":
@@ -261,27 +250,32 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df):
-  """Extracts core current metrics directly for the UI."""
+  """Extracts core current metrics robustly for any station."""
   if df.empty:
     return None
 
   latest = df.iloc[-1]
 
-  t_col = find_col(df, ["Temperature", "Temp", "Temp (F)", "temp_f"])
-  h_col = find_col(df, ["Humidity", "Humidity (%)", "Relative Humidity", "hum"])
-  w_col = find_col(df, ["Wind Speed", "Wind", "Wind_Speed", "wind_mph"])
+  t_col = find_col(df, ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp", "air_temperature"])
+  h_col = find_col(df, ["Humidity", "Humidity (%)", "Relative Humidity", "hum", "Outdoor Humidity", "relative_humidity"])
+  w_col = find_col(df, ["Wind Speed", "Wind", "Wind_Speed", "wind_mph", "Wind (mph)", "wind_avg", "WindSpeed"])
   r_col = find_col(df, ["Rain", "Rainfall", "Precipitation", "Rain (in)"])
 
-  val_t = clean_float(latest[t_col] if t_col else None)
-  val_h = clean_float(latest[h_col] if h_col else None)
-  val_w = clean_float(latest[w_col] if w_col else None)
-  val_r = clean_float(latest[r_col] if r_col else None)
+  raw_t = latest[t_col] if t_col else (latest.iloc[1] if len(latest) > 1 else None)
+  raw_h = latest[h_col] if h_col else (latest.iloc[3] if len(latest) > 3 else None)
+  raw_w = latest[w_col] if w_col else (latest.iloc[2] if len(latest) > 2 else None)
+  raw_r = latest[r_col] if r_col else None
+
+  val_t = clean_float(raw_t)
+  val_h = clean_float(raw_h)
+  val_w = clean_float(raw_w)
+  val_r = clean_float(raw_r)
 
   return {
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
-      "wind_str": f"{val_w} mph" if val_w is not None else "TBD",
-      "rain_str": f"{val_r} in" if val_r is not None else "0.0 in",
+      "wind_str": f"{val_w} mph" if val_w is not None else ("TBD" if r_col else "N/A"),
+      "rain_str": f"{val_r} in" if val_r is not None else ("0.0 in" if r_col else "N/A"),
       "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }
@@ -291,10 +285,7 @@ def extract_station_metrics(df):
 def analog_forecast(df, hours_ahead=2):
   min_records = 30 if hours_ahead < 24 else 60
   if len(df) < min_records:
-    return (
-        None,
-        f"Requires more logged BME280 observations to project +{hours_ahead} hours.",
-    )
+    return None, f"Requires more logged BME280 observations to project +{hours_ahead} hours."
 
   df_clean = df.sort_values("Timestamp").copy()
   current = df_clean.iloc[-1]
@@ -312,17 +303,12 @@ def analog_forecast(df, hours_ahead=2):
     return None, "Current BME280 temperature or humidity could not be parsed."
 
   curr_dew = compute_dew_point(curr_t, curr_h)
-
   min_past_hours = max(12, hours_ahead + 2)
-  past_df = df_clean[
-      df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=min_past_hours))
-  ].copy()
+  past_df = df_clean[df_clean["Timestamp"] < (curr_time - pd.Timedelta(hours=min_past_hours))].copy()
 
   target_hour = curr_time.hour
   past_df["hour_diff"] = (past_df["Timestamp"].dt.hour - target_hour).abs()
-  candidates = past_df[
-      (past_df["hour_diff"] <= 1) | (past_df["hour_diff"] >= 23)
-  ].copy()
+  candidates = past_df[(past_df["hour_diff"] <= 1) | (past_df["hour_diff"] >= 23)].copy()
 
   if len(candidates) < 2:
     return None, f"Not enough matching historical hours for +{hours_ahead}h."
@@ -334,15 +320,10 @@ def analog_forecast(df, hours_ahead=2):
   if candidates.empty:
     return None, "Historical records lack usable numeric observations."
 
-  candidates["diff"] = np.sqrt(
-      (candidates["num_t"] - curr_t) ** 2 + (candidates["num_h"] - curr_h) ** 2
-  )
+  candidates["diff"] = np.sqrt((candidates["num_t"] - curr_t) ** 2 + (candidates["num_h"] - curr_h) ** 2)
   best_matches = candidates.nsmallest(5, "diff")
 
-  future_temps = []
-  future_hums = []
-  future_winds = []
-  future_rains = []
+  future_temps, future_hums, future_winds, future_rains = [], [], [], []
   window_margin = pd.Timedelta(minutes=30) if hours_ahead < 24 else pd.Timedelta(hours=1)
 
   for _, match_row in best_matches.iterrows():
@@ -350,16 +331,14 @@ def analog_forecast(df, hours_ahead=2):
     target_future = match_time + pd.Timedelta(hours=hours_ahead)
 
     future_window = df_clean[
-        (df_clean["Timestamp"] >= target_future - window_margin)
-        & (df_clean["Timestamp"] <= target_future + window_margin)
+        (df_clean["Timestamp"] >= target_future - window_margin) & 
+        (df_clean["Timestamp"] <= target_future + window_margin)
     ]
     if not future_window.empty:
       val_t = clean_float(future_window.iloc[0].get(t_col))
       val_h = clean_float(future_window.iloc[0].get(h_col))
-      if val_t is not None:
-        future_temps.append(val_t)
-      if val_h is not None:
-        future_hums.append(val_h)
+      if val_t is not None: future_temps.append(val_t)
+      if val_h is not None: future_hums.append(val_h)
 
       if w_col:
         val_w = clean_float(future_window.iloc[0].get(w_col))
@@ -380,70 +359,41 @@ def analog_forecast(df, hours_ahead=2):
 
   delta_t = round(pred_t - curr_t, 1)
 
-  # Core Fog Logic
   pred_spread = pred_t - pred_dew if pred_dew is not None else 99.0
-  if pred_h >= 88 or pred_spread <= 2.5:
-    fog_flag = "High"
-  elif pred_h >= 80 or pred_spread <= 4.0:
-    fog_flag = "Moderate"
-  else:
-    fog_flag = "Low"
+  if pred_h >= 88 or pred_spread <= 2.5: fog_flag = "High"
+  elif pred_h >= 80 or pred_spread <= 4.0: fog_flag = "Moderate"
+  else: fog_flag = "Low"
 
-  # Hidden Synoptic Pacific High check: bumps fog risk up if subsidence is active
   high_p_info = detect_pacific_high_pressure(df_clean)
   if high_p_info["status"] == "Strong High (Inversion Lid)" and fog_flag == "Moderate":
     fog_flag = "High"
 
   return {
-      "pred_temp": pred_t,
-      "pred_wind": pred_w,
-      "pred_rain": pred_r,
-      "delta_temp": delta_t,
-      "fog_risk": fog_flag,
-      "matches": len(future_temps),
+      "pred_temp": pred_t, "pred_wind": pred_w, "pred_rain": pred_r,
+      "delta_temp": delta_t, "fog_risk": fog_flag, "matches": len(future_temps),
       "closest_date": best_matches.iloc[0]["Timestamp"].strftime("%b %d, %Y"),
   }, None
 
 
-# ---------------- SLEEK THEMED CHARTS ----------------
-def render_styled_chart(
-    clean_df, col_name, title, color_hex, fill_rgba, tick_format, day_x_range, y_range=None
-):
+# ---------------- PAGE 1: SINGLE BME280 CHARTS ----------------
+def render_styled_chart(clean_df, col_name, title, color_hex, fill_rgba, tick_format, day_x_range, y_range=None):
   fig = px.line(clean_df, x="Timestamp", y=col_name, title=title)
   fig.update_traces(
-      line=dict(color=color_hex, width=2.5),
-      fill="tozeroy",
-      fillcolor=fill_rgba,
+      line=dict(color=color_hex, width=2.5), fill="tozeroy", fillcolor=fill_rgba,
       hovertemplate="%{x|%b %d, %-I:%M %p}<br><b>%{y}</b><extra></extra>",
   )
-  yaxis_dict = dict(
-      showgrid=True,
-      gridcolor="rgba(240,246,252,0.06)",
-      color="#8b949e",
-      zeroline=False,
-  )
-  if y_range:
-    yaxis_dict["range"] = y_range
+  yaxis_dict = dict(showgrid=True, gridcolor="rgba(240,246,252,0.06)", color="#8b949e", zeroline=False)
+  if y_range: yaxis_dict["range"] = y_range
 
   layout_args = dict(
-      paper_bgcolor="rgba(0,0,0,0)",
-      plot_bgcolor="rgba(0,0,0,0)",
-      font=dict(color="#8b949e", family="-apple-system, sans-serif"),
-      hovermode="x unified",
-      margin=dict(l=10, r=10, t=35, b=10),
-      xaxis=dict(
-          showgrid=False,
-          tickformat=tick_format,
-          color="#8b949e",
-          linecolor="rgba(240,246,252,0.1)",
-      ),
+      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#8b949e", family="-apple-system, sans-serif"),
+      hovermode="x unified", margin=dict(l=10, r=10, t=35, b=10),
+      xaxis=dict(showgrid=False, tickformat=tick_format, color="#8b949e", linecolor="rgba(240,246,252,0.1)"),
       yaxis=yaxis_dict,
   )
-  if day_x_range:
-    layout_args["xaxis_range"] = day_x_range
+  if day_x_range: layout_args["xaxis_range"] = day_x_range
   fig.update_layout(**layout_args)
   return fig
-
 
 def render_station_charts(df, tab_name):
   if df.empty:
@@ -468,157 +418,225 @@ def render_station_charts(df, tab_name):
 
   chart_config = {"responsive": True, "displayModeBar": False}
 
-  # Temp Chart
   if temp_col:
-    plot_df[temp_col] = pd.to_numeric(
-        plot_df[temp_col].astype(str).str.replace("°F", "", regex=False).str.strip(), errors="coerce"
-    )
+    plot_df[temp_col] = pd.to_numeric(plot_df[temp_col].astype(str).str.replace("°F", "", regex=False).str.strip(), errors="coerce")
     clean_temp = plot_df.dropna(subset=[temp_col, "Timestamp"]).sort_values("Timestamp")
     if not clean_temp.empty:
-      st.plotly_chart(render_styled_chart(
-          clean_temp, temp_col, "Temperature Trend", "#f97316", "rgba(249, 115, 22, 0.08)", tick_format, day_x_range
-      ), use_container_width=True, config=chart_config)
+      st.plotly_chart(render_styled_chart(clean_temp, temp_col, "Temperature Trend", "#f97316", "rgba(249, 115, 22, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
 
-  # Hum Chart
   if hum_col:
-    plot_df[hum_col] = pd.to_numeric(
-        plot_df[hum_col].astype(str).str.replace("%", "", regex=False).str.strip(), errors="coerce"
-    )
+    plot_df[hum_col] = pd.to_numeric(plot_df[hum_col].astype(str).str.replace("%", "", regex=False).str.strip(), errors="coerce")
     clean_hum = plot_df.dropna(subset=[hum_col, "Timestamp"]).sort_values("Timestamp")
     if not clean_hum.empty:
-      st.plotly_chart(render_styled_chart(
-          clean_hum, hum_col, "Relative Humidity Trend", "#3b82f6", "rgba(59, 130, 246, 0.08)", tick_format, day_x_range
-      ), use_container_width=True, config=chart_config)
+      st.plotly_chart(render_styled_chart(clean_hum, hum_col, "Relative Humidity Trend", "#3b82f6", "rgba(59, 130, 246, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
 
-  # Wind Chart
   if wind_col:
-    plot_df[wind_col] = pd.to_numeric(
-        plot_df[wind_col].astype(str).str.replace("mph", "", regex=False).str.strip(), errors="coerce"
-    )
+    plot_df[wind_col] = pd.to_numeric(plot_df[wind_col].astype(str).str.replace("mph", "", regex=False).str.strip(), errors="coerce")
     clean_wind = plot_df.dropna(subset=[wind_col, "Timestamp"]).sort_values("Timestamp")
     if not clean_wind.empty:
-      st.plotly_chart(render_styled_chart(
-          clean_wind, wind_col, "Wind Speed Trend", "#06b6d4", "rgba(6, 182, 212, 0.08)", tick_format, day_x_range
-      ), use_container_width=True, config=chart_config)
+      st.plotly_chart(render_styled_chart(clean_wind, wind_col, "Wind Speed Trend", "#06b6d4", "rgba(6, 182, 212, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
 
-  # Rain Chart
   if rain_col:
-    plot_df[rain_col] = pd.to_numeric(
-        plot_df[rain_col].astype(str).str.replace("in", "", regex=False).str.strip(), errors="coerce"
-    )
+    plot_df[rain_col] = pd.to_numeric(plot_df[rain_col].astype(str).str.replace("in", "", regex=False).str.strip(), errors="coerce")
     clean_rain = plot_df.dropna(subset=[rain_col, "Timestamp"]).sort_values("Timestamp")
     if not clean_rain.empty:
-      st.plotly_chart(render_styled_chart(
-          clean_rain, rain_col, "Rainfall Trend", "#60a5fa", "rgba(96, 165, 250, 0.08)", tick_format, day_x_range
-      ), use_container_width=True, config=chart_config)
+      st.plotly_chart(render_styled_chart(clean_rain, rain_col, "Rainfall Trend", "#60a5fa", "rgba(96, 165, 250, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
 
-  # Pressure Chart
   if press_col:
-    plot_df[press_col] = pd.to_numeric(
-        plot_df[press_col].astype(str).str.replace("hPa", "", regex=False).str.strip(), errors="coerce"
-    )
+    plot_df[press_col] = pd.to_numeric(plot_df[press_col].astype(str).str.replace("hPa", "", regex=False).str.strip(), errors="coerce")
     clean_press = plot_df.dropna(subset=[press_col, "Timestamp"]).sort_values("Timestamp")
     if not clean_press.empty:
-      st.plotly_chart(render_styled_chart(
-          clean_press, press_col, "Barometric Pressure Trend", "#a855f7", "rgba(168, 85, 247, 0.08)", tick_format, day_x_range, y_range=[985.0, 1005.0]
-      ), use_container_width=True, config=chart_config)
+      st.plotly_chart(render_styled_chart(clean_press, press_col, "Barometric Pressure Trend", "#a855f7", "rgba(168, 85, 247, 0.08)", tick_format, day_x_range, y_range=[985.0, 1005.0]), use_container_width=True, config=chart_config)
 
 
-# ---------------- DASHBOARD UI ----------------
-@st.fragment(run_every="180s")
-def render_dashboard():
-  st.markdown(
-      "<h2 style='margin-bottom:0.2rem;'>🌦️ DIY Weather Command Center</h2>",
-      unsafe_allow_html=True,
+# ---------------- PAGE 2: COMBINED MULTI-LINE CHARTS ----------------
+def render_combined_chart(df_dict, col_options, title, y_suffix, tick_format, day_x_range):
+  fig = go.Figure()
+  colors = {"La Crosse": "#a855f7", "Tempest": "#06b6d4", "DIY BME280": "#f97316"}
+  has_data = False
+
+  for station_name, df in df_dict.items():
+      if df.empty:
+          continue
+      col = find_col(df, col_options)
+      if col:
+          plot_df = df.copy()
+          plot_df[col] = plot_df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
+          plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce')
+          clean_df = plot_df.dropna(subset=[col, 'Timestamp']).sort_values('Timestamp')
+          
+          if not clean_df.empty:
+              has_data = True
+              fig.add_trace(go.Scatter(
+                  x=clean_df['Timestamp'], 
+                  y=clean_df[col],
+                  mode='lines',
+                  name=station_name,
+                  line=dict(color=colors.get(station_name, "#ffffff"), width=2.5),
+                  hovertemplate=f"%{{x|%b %d, %-I:%M %p}}<br><b>%{{y}} {y_suffix}</b><extra>{station_name}</extra>"
+              ))
+
+  if not has_data:
+      return None
+
+  layout_args = dict(
+      title=title,
+      paper_bgcolor="rgba(0,0,0,0)",
+      plot_bgcolor="rgba(0,0,0,0)",
+      font=dict(color="#8b949e", family="-apple-system, sans-serif"),
+      hovermode="x unified",
+      margin=dict(l=10, r=10, t=35, b=10),
+      xaxis=dict(showgrid=False, tickformat=tick_format, color="#8b949e", linecolor="rgba(240,246,252,0.1)"),
+      yaxis=dict(showgrid=True, gridcolor="rgba(240,246,252,0.06)", color="#8b949e", zeroline=False),
+      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
   )
-  st.caption("Real-Time Microclimate Monitoring & Fog Prediction via BME280")
-
-  df_diy = load_sheet_data(DIY_SHEET_ID)
-
-  # ---------------- 1. CURRENT OBSERVATIONS CARD ----------------
-  with st.container(border=True):
-    m_diy = extract_station_metrics(df_diy)
-    status_tag = get_live_badge(m_diy["raw_ts"]) if m_diy else "⚪ OFFLINE"
-    
-    st.markdown(
-        f"<div style='display:flex; justify-content:space-between;"
-        f" align-items:center;'><b>🛠️ Current Conditions (BME280)</b>{status_tag}</div>",
-        unsafe_allow_html=True,
-    )
-    
-    if m_diy:
-      m1, m2, m3, m4 = st.columns(4)
-      m1.metric("Temperature", m_diy["temp_str"])
-      m2.metric("Humidity", m_diy["hum_str"])
-      m3.metric("Wind Speed", m_diy["wind_str"])
-      m4.metric("Rain", m_diy["rain_str"])
-      st.caption(f"Latest observation: {m_diy['time_str']}")
-    else:
-      st.warning("No live data available for DIY Station.")
-
-  # ---------------- 2. DYNAMIC FORECAST CARD WITH TIME HORIZON SWITCHER ----------------
-  if not df_diy.empty:
-    with st.container(border=True):
-      fc_header_l, fc_header_r = st.columns([2, 1])
-      with fc_header_l:
-        st.markdown(
-            "<span style='font-weight:700; font-size:1.05rem;'>🔮 Historical"
-            " Pattern Forecast</span>",
-            unsafe_allow_html=True,
-        )
-      with fc_header_r:
-        forecast_horizon_str = st.radio(
-            "Forecast Horizon",
-            ["+1 hr", "+3 hrs", "+5 hrs", "+24 hrs"],
-            index=1,
-            horizontal=True,
-            label_visibility="collapsed",
-            key="forecast_horizon_picker",
-        )
-
-      horizon_map = {"+1 hr": 1, "+3 hrs": 3, "+5 hrs": 5, "+24 hrs": 24}
-      selected_hours = horizon_map.get(forecast_horizon_str, 3)
-
-      forecast, err = analog_forecast(df_diy, hours_ahead=selected_hours)
+  if day_x_range:
+      layout_args["xaxis_range"] = day_x_range
       
-      if forecast:
-        st.markdown(
-            f"<div style='display:flex; justify-content:space-between;"
-            " align-items:center; margin-bottom:0.75rem;'><span"
-            " style='color:#8b949e; font-size:0.85rem;'>BME280 Pattern"
-            f" Projection ({forecast_horizon_str})</span>"
-            f" {get_fog_badge(forecast['fog_risk'])}</div>",
-            unsafe_allow_html=True,
-        )
-        fc1, fc2, fc3, fc4 = st.columns(4)
-        fc1.metric(
-            "Projected Temp",
-            f"{forecast['pred_temp']}°F",
-            delta=f"{forecast['delta_temp']:+}°F",
-        )
-        fc2.metric("Fog Propensity", forecast["fog_risk"])
-        fc3.metric(
-            "Projected Wind", 
-            f"{forecast['pred_wind']} mph" if forecast["pred_wind"] != "TBD" else "TBD"
-        )
-        fc4.metric("Projected Rain", f"{forecast['pred_rain']} in")
+  fig.update_layout(**layout_args)
+  return fig
 
-        st.caption(
-            f"Calculated via BME280 historical analogs ({forecast_horizon_str}"
-            f" ahead). Closest pattern matched: **{forecast['closest_date']}**."
-        )
-      elif err:
-        st.caption(f"Forecast model info: {err}")
 
-  # ---------------- 3. TIMEFRAME SELECTOR & TREND CHARTS ----------------
-  timeframe = st.radio(
-      "Select Timeframe",
-      ["Daily", "Weekly", "Monthly", "All Time"],
-      horizontal=True,
-      label_visibility="collapsed",
-  )
+# ---------------- MAIN APP NAVIGATION & DASHBOARD ----------------
+page_selection = st.sidebar.radio("Navigation", ["🛠️ DIY BME280 Dashboard", "📊 Station Comparison"])
 
-  duration_key = timeframe.lower()
-  render_station_charts(filter_by_duration(df_diy, duration_key), duration_key)
+@st.fragment(run_every="180s")
+def render_dashboard(selected_page):
+  
+  if selected_page == "🛠️ DIY BME280 Dashboard":
+    st.markdown("<h2 style='margin-bottom:0.2rem;'>🌦️ DIY Weather Command Center</h2>", unsafe_allow_html=True)
+    st.caption("Real-Time Microclimate Monitoring & Fog Prediction via BME280")
 
-render_dashboard()
+    df_diy = load_sheet_data(DIY_SHEET_ID)
+
+    with st.container(border=True):
+      m_diy = extract_station_metrics(df_diy)
+      status_tag = get_live_badge(m_diy["raw_ts"]) if m_diy else "⚪ OFFLINE"
+      
+      st.markdown(
+          f"<div style='display:flex; justify-content:space-between; align-items:center;'><b>🛠️ Current Conditions (BME280)</b>{status_tag}</div>",
+          unsafe_allow_html=True,
+      )
+      
+      if m_diy:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Temperature", m_diy["temp_str"])
+        m2.metric("Humidity", m_diy["hum_str"])
+        m3.metric("Wind Speed", m_diy["wind_str"])
+        m4.metric("Rain", m_diy["rain_str"])
+        st.caption(f"Latest observation: {m_diy['time_str']}")
+      else:
+        st.warning("No live data available for DIY Station.")
+
+    if not df_diy.empty:
+      with st.container(border=True):
+        fc_header_l, fc_header_r = st.columns([2, 1])
+        with fc_header_l:
+          st.markdown("<span style='font-weight:700; font-size:1.05rem;'>🔮 Historical Pattern Forecast</span>", unsafe_allow_html=True)
+        with fc_header_r:
+          forecast_horizon_str = st.radio("Forecast Horizon", ["+1 hr", "+3 hrs", "+5 hrs", "+24 hrs"], index=1, horizontal=True, label_visibility="collapsed", key="fc_picker")
+
+        horizon_map = {"+1 hr": 1, "+3 hrs": 3, "+5 hrs": 5, "+24 hrs": 24}
+        forecast, err = analog_forecast(df_diy, hours_ahead=horizon_map.get(forecast_horizon_str, 3))
+        
+        if forecast:
+          st.markdown(
+              f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;'><span style='color:#8b949e; font-size:0.85rem;'>BME280 Pattern Projection ({forecast_horizon_str})</span> {get_fog_badge(forecast['fog_risk'])}</div>",
+              unsafe_allow_html=True,
+          )
+          fc1, fc2, fc3, fc4 = st.columns(4)
+          fc1.metric("Projected Temp", f"{forecast['pred_temp']}°F", delta=f"{forecast['delta_temp']:+}°F")
+          fc2.metric("Fog Propensity", forecast["fog_risk"])
+          fc3.metric("Projected Wind", f"{forecast['pred_wind']} mph" if forecast["pred_wind"] != "TBD" else "TBD")
+          fc4.metric("Projected Rain", f"{forecast['pred_rain']} in")
+          st.caption(f"Calculated via BME280 historical analogs ({forecast_horizon_str} ahead). Closest pattern matched: **{forecast['closest_date']}**.")
+        elif err:
+          st.caption(f"Forecast model info: {err}")
+
+    timeframe = st.radio("Select Timeframe", ["Daily", "Weekly", "Monthly", "All Time"], horizontal=True, label_visibility="collapsed")
+    render_station_charts(filter_by_duration(df_diy, timeframe.lower()), timeframe.lower())
+
+  else:
+    # ---------------- STATION COMPARISON PAGE ----------------
+    st.markdown("<h2 style='margin-bottom:0.2rem;'>📊 Station Comparison</h2>", unsafe_allow_html=True)
+    st.caption("Side-by-side analysis of La Crosse, Tempest, and DIY BME280")
+
+    df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
+    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_diy = load_sheet_data(DIY_SHEET_ID)
+
+    col_lacrosse, col_tempest = st.columns(2)
+
+    with col_lacrosse:
+      with st.container(border=True):
+        m_lacrosse = extract_station_metrics(df_lacrosse)
+        status_tag = get_live_badge(m_lacrosse["raw_ts"]) if m_lacrosse else "⚪ Offline"
+        st.markdown(f"<div style='display:flex; justify-content:space-between; align-items:center;'><b>🏡 La Crosse Station</b>{status_tag}</div>", unsafe_allow_html=True)
+        if m_lacrosse:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_lacrosse["temp_str"])
+          m2.metric("Wind Speed", m_lacrosse["wind_str"])
+          m3.metric("Humidity", m_lacrosse["hum_str"])
+          st.caption(f"Latest observation: {m_lacrosse['time_str']}")
+        else:
+          st.warning("No live data available for La Crosse.")
+
+    with col_tempest:
+      with st.container(border=True):
+        m_tempest = extract_station_metrics(df_tempest)
+        status_tag = get_live_badge(m_tempest["raw_ts"]) if m_tempest else "⚪ Offline"
+        st.markdown(f"<div style='display:flex; justify-content:space-between; align-items:center;'><b>⚡ Tempest Station</b>{status_tag}</div>", unsafe_allow_html=True)
+        if m_tempest:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_tempest["temp_str"])
+          m2.metric("Wind Speed", m_tempest["wind_str"])
+          m3.metric("Humidity", m_tempest["hum_str"])
+          st.caption(f"Latest observation: {m_tempest['time_str']}")
+        else:
+          st.warning("No live data available for Tempest.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    timeframe = st.radio("Select Timeframe", ["Daily", "Weekly", "Monthly", "All Time"], horizontal=True, label_visibility="collapsed", key="comp_tf")
+    duration_key = timeframe.lower()
+    
+    df_dict_all = {
+        "La Crosse": filter_by_duration(df_lacrosse, duration_key),
+        "Tempest": filter_by_duration(df_tempest, duration_key),
+        "DIY BME280": filter_by_duration(df_diy, duration_key)
+    }
+    
+    # Rain chart only includes Tempest and BME280
+    df_dict_rain = {
+        "Tempest": df_dict_all["Tempest"],
+        "DIY BME280": df_dict_all["DIY BME280"]
+    }
+
+    day_x_range = None
+    tick_format = "%b %d, %-I:%M %p"
+    if duration_key == "daily":
+        latest_ts = None
+        for df in df_dict_all.values():
+            if not df.empty:
+                latest_ts = df["Timestamp"].max()
+                break
+        if latest_ts:
+            day_start = latest_ts.normalize()
+            day_end = day_start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            day_x_range = [day_start, day_end]
+            tick_format = "%-I:%M %p"
+
+    chart_config = {"responsive": True, "displayModeBar": False}
+
+    fig_temp = render_combined_chart(df_dict_all, ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp"], "Temperature Trend", "°F", tick_format, day_x_range)
+    if fig_temp: st.plotly_chart(fig_temp, use_container_width=True, config=chart_config)
+
+    fig_hum = render_combined_chart(df_dict_all, ["Humidity (%)", "Humidity", "Relative Humidity", "hum", "Outdoor Humidity"], "Relative Humidity Trend", "%", tick_format, day_x_range)
+    if fig_hum: st.plotly_chart(fig_hum, use_container_width=True, config=chart_config)
+
+    fig_wind = render_combined_chart(df_dict_all, ["Wind Speed", "Wind", "wind_mph", "Wind_Speed"], "Wind Speed Trend", "mph", tick_format, day_x_range)
+    if fig_wind: st.plotly_chart(fig_wind, use_container_width=True, config=chart_config)
+
+    fig_rain = render_combined_chart(df_dict_rain, ["Rain", "Rainfall", "Precipitation"], "Rainfall Trend", "in", tick_format, day_x_range)
+    if fig_rain: st.plotly_chart(fig_rain, use_container_width=True, config=chart_config)
+
+render_dashboard(page_selection)

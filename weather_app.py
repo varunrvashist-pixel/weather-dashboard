@@ -306,6 +306,7 @@ def extract_station_metrics(df):
       df,
       [
           "Wind Speed",
+          "Wind Speed (mph)",
           "Wind",
           "Wind_Speed",
           "wind_mph",
@@ -343,7 +344,7 @@ def analog_forecast(df, hours_ahead=2):
 
   t_col = find_col(df_clean, ["Temperature", "Temp", "Temp (F)", "temp_f"])
   h_col = find_col(df_clean, ["Humidity", "Humidity (%)", "Relative Humidity"])
-  w_col = find_col(df_clean, ["Wind Speed", "Wind", "wind_mph"])
+  w_col = find_col(df_clean, ["Wind Speed", "Wind Speed (mph)", "Wind", "wind_mph"])
   r_col = find_col(df_clean, ["Rain", "Rainfall", "Precipitation"])
 
   curr_t = clean_float(current[t_col] if t_col else None)
@@ -462,7 +463,6 @@ def render_station_charts(df, tab_name):
 
   temp_col = find_col(plot_df, ["Temperature", "Temp", "Temp (F)", "temp_f"])
   hum_col = find_col(plot_df, ["Humidity (%)", "Humidity", "Relative Humidity"])
-  wind_col = find_col(plot_df, ["Wind Speed", "Wind", "wind_mph"])
   rain_col = find_col(plot_df, ["Rain", "Rainfall", "Precipitation"])
   press_col = find_col(plot_df, ["Pressure", "Pressure (hPa)", "Barometric Pressure"])
 
@@ -480,11 +480,7 @@ def render_station_charts(df, tab_name):
     if not clean_hum.empty:
       st.plotly_chart(render_styled_chart(clean_hum, hum_col, "Relative Humidity Trend", "#3b82f6", "rgba(59, 130, 246, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
 
-  if wind_col:
-    plot_df[wind_col] = pd.to_numeric(plot_df[wind_col].astype(str).str.replace("mph", "", regex=False).str.strip(), errors="coerce")
-    clean_wind = plot_df.dropna(subset=[wind_col, "Timestamp"]).sort_values("Timestamp")
-    if not clean_wind.empty:
-      st.plotly_chart(render_styled_chart(clean_wind, wind_col, "Wind Speed Trend", "#06b6d4", "rgba(6, 182, 212, 0.08)", tick_format, day_x_range), use_container_width=True, config=chart_config)
+  # Wind Speed chart intentionally omitted on the DIY BME280 page
 
   if rain_col:
     plot_df[rain_col] = pd.to_numeric(plot_df[rain_col].astype(str).str.replace("in", "", regex=False).str.strip(), errors="coerce")
@@ -710,7 +706,7 @@ def render_dashboard(selected_page):
     fig_hum = render_combined_chart(df_dict_all, ["Humidity (%)", "Humidity", "Relative Humidity", "hum", "Outdoor Humidity"], "Relative Humidity Trend", "%", tick_format, day_x_range)
     if fig_hum: st.plotly_chart(fig_hum, use_container_width=True, config=chart_config)
 
-    fig_wind = render_combined_chart(df_dict_all, ["Wind Speed", "Wind", "wind_mph", "Wind_Speed"], "Wind Speed Trend", "mph", tick_format, day_x_range)
+    fig_wind = render_combined_chart(df_dict_all, ["Wind Speed", "Wind Speed (mph)", "Wind", "wind_mph", "Wind_Speed"], "Wind Speed Trend", "mph", tick_format, day_x_range)
     if fig_wind: st.plotly_chart(fig_wind, use_container_width=True, config=chart_config)
 
     fig_rain = render_combined_chart(df_dict_rain, ["Rain", "Rainfall", "Precipitation"], "Rainfall Trend", "in", tick_format, day_x_range)

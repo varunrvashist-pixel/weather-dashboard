@@ -374,7 +374,7 @@ def analog_forecast(df, hours_ahead=2):
   candidates["diff"] = np.sqrt((candidates["num_t"] - curr_t) ** 2 + (candidates["num_h"] - curr_h) ** 2)
   best_matches = candidates.nsmallest(5, "diff")
 
-  future_temps, future_hums, future_winds, future_rains = [], [], [], []
+  future_temps, future_hums, future_rains = [], [], []
   window_margin = pd.Timedelta(minutes=30) if hours_ahead < 24 else pd.Timedelta(hours=1)
 
   for _, match_row in best_matches.iterrows():
@@ -391,12 +391,33 @@ def analog_forecast(df, hours_ahead=2):
       if val_t is not None: future_temps.append(val_t)
       if val_h is not None: future_hums.append(val_h)
 
-      if w_col:
-        val_w = clean_float(future_window.iloc[0].get(w_col))
-        if val_w is not None: future_winds.append(val_w)
       if r_col:
         val_r = clean_float(future_window.iloc[0].get(r_col))
         if val_r is not None: future_rains.append(val_r)
+
+  # --- NEW WIND PROJECTION LOGIC ---
+  pred_wind_str = "TBD"
+  if w_col:
+      best_match_time = best_matches.iloc[0]["Timestamp"]
+      end_time = best_match_time + pd.Timedelta(hours=hours_ahead)
+      
+      # Extract continuous wind data block for the designated duration
+      continuous_wind_window = df_clean[
+          (df_clean["Timestamp"] >= best_match_time) & 
+          (df_clean["Timestamp"] <= end_time)
+      ]
+      
+      if not continuous_wind_window.empty:
+          wind_series = continuous_wind_window[w_col].apply(clean_float).dropna()
+          if not wind_series.empty:
+              avg_wind = wind_series.mean()
+              gusts = wind_series[wind_series > avg_wind]
+              
+              if gusts.empty:
+                  pred_wind_str = f"{round(avg_wind, 1)} mph"
+              else:
+                  pred_wind_str = f"{round(gusts.min(), 1)} - {round(gusts.max(), 1)} mph"
+  # ---------------------------------
 
   if not future_temps:
     return None, f"Found matches, but subsequent +{hours_ahead}h records were not logged."
@@ -405,7 +426,6 @@ def analog_forecast(df, hours_ahead=2):
   pred_h = round(float(np.mean(future_hums)), 1)
   pred_dew = compute_dew_point(pred_t, pred_h)
   
-  pred_w = round(float(np.mean(future_winds)), 1) if future_winds else "TBD"
   pred_r = round(float(np.mean(future_rains)), 2) if future_rains else 0.0
 
   delta_t = round(pred_t - curr_t, 1)
@@ -420,7 +440,7 @@ def analog_forecast(df, hours_ahead=2):
     fog_flag = "High"
 
   return {
-      "pred_temp": pred_t, "pred_wind": pred_w, "pred_rain": pred_r,
+      "pred_temp": pred_t, "pred_wind": pred_wind_str, "pred_rain": pred_r,
       "delta_temp": delta_t, "fog_risk": fog_flag, "matches": len(future_temps),
       "closest_date": best_matches.iloc[0]["Timestamp"].strftime("%b %d, %Y"),
   }, None
@@ -620,7 +640,7 @@ def render_dashboard(selected_page):
           fc1, fc2, fc3, fc4 = st.columns(4)
           fc1.metric("Projected Temp", f"{forecast['pred_temp']}°F", delta=f"{forecast['delta_temp']:+}°F")
           fc2.metric("Fog Propensity", forecast["fog_risk"])
-          fc3.metric("Projected Wind", f"{forecast['pred_wind']} mph" if forecast["pred_wind"] != "TBD" else "TBD")
+          fc3.metric("Projected Wind", forecast["pred_wind"])
           fc4.metric("Projected Rain", f"{forecast['pred_rain']} in")
           st.caption(f"Calculated via BME280 historical analogs ({forecast_horizon_str} ahead). Closest pattern matched: **{forecast['closest_date']}**.")
         elif err:

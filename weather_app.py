@@ -273,31 +273,59 @@ def filter_by_duration(df, duration):
 
 
 def extract_station_metrics(df):
+  """Extracts core current metrics without falling back to wrong columns."""
   if df.empty:
     return None
 
   latest = df.iloc[-1]
 
-  t_col = find_col(df, ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp", "air_temperature"])
-  h_col = find_col(df, ["Humidity", "Humidity (%)", "Relative Humidity", "hum", "Outdoor Humidity", "relative_humidity"])
-  w_col = find_col(df, ["Wind Speed", "Wind", "Wind_Speed", "wind_mph", "Wind (mph)", "wind_avg", "WindSpeed"])
+  t_col = find_col(
+      df,
+      [
+          "Temperature",
+          "Temp",
+          "Temp (F)",
+          "temp_f",
+          "Outdoor Temp",
+          "Air Temp",
+          "air_temperature",
+      ],
+  )
+  h_col = find_col(
+      df,
+      [
+          "Humidity",
+          "Humidity (%)",
+          "Relative Humidity",
+          "hum",
+          "Outdoor Humidity",
+          "relative_humidity",
+      ],
+  )
+  w_col = find_col(
+      df,
+      [
+          "Wind Speed",
+          "Wind",
+          "Wind_Speed",
+          "wind_mph",
+          "Wind (mph)",
+          "wind_avg",
+          "WindSpeed",
+      ],
+  )
   r_col = find_col(df, ["Rain", "Rainfall", "Precipitation", "Rain (in)"])
 
-  raw_t = latest[t_col] if t_col else (latest.iloc[1] if len(latest) > 1 else None)
-  raw_h = latest[h_col] if h_col else (latest.iloc[3] if len(latest) > 3 else None)
-  raw_w = latest[w_col] if w_col else (latest.iloc[2] if len(latest) > 2 else None)
-  raw_r = latest[r_col] if r_col else None
-
-  val_t = clean_float(raw_t)
-  val_h = clean_float(raw_h)
-  val_w = clean_float(raw_w)
-  val_r = clean_float(raw_r)
+  val_t = clean_float(latest[t_col]) if t_col else None
+  val_h = clean_float(latest[h_col]) if h_col else None
+  val_w = clean_float(latest[w_col]) if w_col else None
+  val_r = clean_float(latest[r_col]) if r_col else None
 
   return {
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
-      "wind_str": f"{val_w} mph" if val_w is not None else ("TBD" if r_col else "N/A"),
-      "rain_str": f"{val_r} in" if val_r is not None else ("0.0 in" if r_col else "N/A"),
+      "wind_str": f"{val_w} mph" if val_w is not None else "TBD",
+      "rain_str": f"{val_r} in" if val_r is not None else "0.0 in",
       "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }

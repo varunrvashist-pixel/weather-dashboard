@@ -1170,8 +1170,9 @@ def render_dashboard(selected_page):
           filtered_metar,
           "metar_custom",
           include_wind=True,
+          custom_press_range=[1005.0, 1030.0],
       )
-
+      
   else:
     # ---------------- STATION COMPARISON PAGE ----------------
     comp_header_l, comp_header_r = st.columns([2, 1])

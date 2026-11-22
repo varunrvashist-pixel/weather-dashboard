@@ -139,6 +139,21 @@ def compute_dew_point(temp_raw, hum_raw):
     return None
 
 
+def compute_relative_humidity(temp_c, dewp_c):
+  """Calculates Relative Humidity (%) from Celsius temp and dew point via Magnus formula."""
+  try:
+    if temp_c is None or dewp_c is None:
+      return None
+    a, b = 17.27, 237.7
+    rh = 100.0 * (
+        np.exp((a * dewp_c) / (b + dewp_c))
+        / np.exp((a * temp_c) / (b + temp_c))
+    )
+    return round(float(np.clip(rh, 0.0, 100.0)), 1)
+  except Exception:
+    return None
+
+
 def get_live_badge(latest_ts):
   if pd.isna(latest_ts):
     return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'
@@ -250,31 +265,34 @@ def load_sheet_data(sheet_id):
 
 
 @st.cache_data(ttl=300)
-def fetch_metar_data(icao="KSQL"):
+def fetch_metar_history(icao="KSQL", hours=168):
+  """Fetches up to `hours` of historical METAR observations from NOAA Aviation Weather API."""
   try:
-    url = f"https://aviationweather.gov/api/data/metar?ids={icao}&format=json"
-    resp = requests.get(url, timeout=10)
+    url = f"https://aviationweather.gov/api/data/metar?ids={icao}&format=json&hours={hours}"
+    resp = requests.get(url, timeout=12)
     resp.raise_for_status()
     data = resp.json()
     if not data:
-      return None
-    obs = data[0]
+      return None, pd.DataFrame()
 
-    temp_c = obs.get("temp")
-    dewp_c = obs.get("dewp")
+    # Latest observation is first in the returned list
+    latest_obs = data[0]
+    temp_c = latest_obs.get("temp")
+    dewp_c = latest_obs.get("dewp")
     temp_f = round((temp_c * 9 / 5) + 32, 1) if temp_c is not None else None
     dewp_f = round((dewp_c * 9 / 5) + 32, 1) if dewp_c is not None else None
+    hum_pct = compute_relative_humidity(temp_c, dewp_c)
 
-    wspd_kt = obs.get("wspd")
+    wspd_kt = latest_obs.get("wspd")
     wspd_mph = round(wspd_kt * 1.15078, 1) if wspd_kt is not None else None
-    wdir = obs.get("wdir")
+    wdir = latest_obs.get("wdir")
 
-    altim = obs.get("altim")
-    visib = obs.get("visib")
-    flt_cat = obs.get("fltCat", "N/A")
-    raw_ob = obs.get("rawOb", "N/A")
+    altim = latest_obs.get("altim")
+    visib = latest_obs.get("visib")
+    flt_cat = latest_obs.get("fltCat", "N/A")
+    raw_ob = latest_obs.get("rawOb", "N/A")
 
-    obs_time = obs.get("obsTime")
+    obs_time = latest_obs.get("obsTime")
     local_time_str = "N/A"
     if obs_time:
       dt_local = datetime.fromtimestamp(
@@ -282,10 +300,11 @@ def fetch_metar_data(icao="KSQL"):
       )
       local_time_str = dt_local.strftime("%b %d, %-I:%M %p")
 
-    return {
+    latest_dict = {
         "icao": icao,
         "temp_f": temp_f,
         "dewp_f": dewp_f,
+        "hum_pct": hum_pct,
         "wspd_mph": wspd_mph,
         "wdir": wdir,
         "altim": altim,
@@ -294,8 +313,37 @@ def fetch_metar_data(icao="KSQL"):
         "raw_ob": raw_ob,
         "time_str": local_time_str,
     }
+
+    # Build historical DataFrame for charting
+    rows = []
+    for obs in data:
+      ts_epoch = obs.get("obsTime")
+      if not ts_epoch:
+        continue
+      dt_pt = datetime.fromtimestamp(
+          ts_epoch, tz=ZoneInfo("America/Los_Angeles")
+      ).replace(tzinfo=None)
+
+      t_c = obs.get("temp")
+      d_c = obs.get("dewp")
+      w_kt = obs.get("wspd")
+      p_hpa = obs.get("altim")
+
+      rows.append({
+          "Timestamp": dt_pt,
+          "Temperature": round((t_c * 9 / 5) + 32, 1) if t_c is not None else None,
+          "Humidity": compute_relative_humidity(t_c, d_c),
+          "Wind Speed": round(w_kt * 1.15078, 1) if w_kt is not None else None,
+          "Pressure": float(p_hpa) if p_hpa is not None else None,
+      })
+
+    df_hist = pd.DataFrame(rows)
+    if not df_hist.empty:
+      df_hist = df_hist.dropna(subset=["Timestamp"]).sort_values("Timestamp")
+
+    return latest_dict, df_hist
   except Exception:
-    return None
+    return None, pd.DataFrame()
 
 
 def format_display_time(ts):
@@ -1034,7 +1082,7 @@ def render_dashboard(selected_page):
           "<h2 style='margin-bottom:0.2rem;'>✈️ Aviation METAR Feed</h2>",
           unsafe_allow_html=True,
       )
-      st.caption("Official Nearby Airport Surface Observations")
+      st.caption("Official Nearby Airport Surface Observations & Trends")
     with metar_header_r:
       selected_icao = st.radio(
           "Airport Station",
@@ -1045,7 +1093,7 @@ def render_dashboard(selected_page):
           key="metar_icao_picker",
       )
 
-    metar = fetch_metar_data(selected_icao)
+    metar, df_metar_hist = fetch_metar_history(selected_icao, hours=168)
     with st.container(border=True):
       if metar:
         cat_color = (
@@ -1072,8 +1120,8 @@ def render_dashboard(selected_page):
             f"{metar['temp_f']} °F" if metar["temp_f"] is not None else "N/A",
         )
         m2.metric(
-            "Dew Point",
-            f"{metar['dewp_f']} °F" if metar["dewp_f"] is not None else "N/A",
+            "Humidity",
+            f"{metar['hum_pct']} %" if metar["hum_pct"] is not None else "N/A",
         )
         wind_val = (
             f"{metar['wspd_mph']} mph ({metar['wdir']}°)"
@@ -1082,10 +1130,8 @@ def render_dashboard(selected_page):
         )
         m3.metric("Wind", wind_val)
         m4.metric(
-            "Altimeter / Vis",
-            f"{metar['altim']} hPa | {metar['visib']} mi"
-            if metar["altim"] is not None
-            else "N/A",
+            "Pressure",
+            f"{metar['altim']} hPa" if metar["altim"] is not None else "N/A",
         )
 
         st.markdown(
@@ -1095,9 +1141,36 @@ def render_dashboard(selected_page):
             f" color:#79c0ff;'>{metar['raw_ob']}</div>",
             unsafe_allow_html=True,
         )
-        st.caption(f"Reported at: {metar['time_str']}")
+        st.caption(
+            f"Reported at: {metar['time_str']} • Dew Point: {metar['dewp_f']} °F"
+            f" • Visibility: {metar['visib']} mi (Rain & Fog charts omitted)"
+        )
       else:
         st.warning(f"Unable to fetch live METAR report for {selected_icao}.")
+
+    if not df_metar_hist.empty:
+      metar_tf = st.radio(
+          "METAR History Window",
+          ["24 Hours", "3 Days", "7 Days"],
+          index=0,
+          horizontal=True,
+          label_visibility="collapsed",
+          key="metar_tf",
+      )
+      hours_map = {"24 Hours": 24, "3 Days": 72, "7 Days": 168}
+      cutoff = df_metar_hist["Timestamp"].max() - pd.Timedelta(
+          hours=hours_map[metar_tf]
+      )
+      filtered_metar = df_metar_hist[
+          df_metar_hist["Timestamp"] >= cutoff
+      ].copy()
+
+      # Renders Temperature, Humidity, Wind Speed, and Pressure in order
+      render_station_charts(
+          filtered_metar,
+          "metar_custom",
+          include_wind=True,
+      )
 
   else:
     # ---------------- STATION COMPARISON PAGE ----------------

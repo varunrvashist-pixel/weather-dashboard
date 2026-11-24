@@ -155,14 +155,7 @@ def compute_relative_humidity(temp_c, dewp_c):
 
 
 def compute_diy_fog_index(df_diy, prox_span=120.0):
-  """Computes an accurate 0.0 (Clear) to 1.0 (Dense Fog) index for DIY BME280.
-
-  Combines:
-    1. Baseline-calibrated IR proximity backscatter ('Proximity (raw)')
-    2. Hardware 'Fog Detected' flag (if triggered)
-    3. BME280 thermodynamic saturation (Humidity & Dew-Point Spread) so clear dry
-       days stay at 0.00 and pre-fog mist aligns closely with METAR visibility.
-  """
+  """Computes an accurate 0.0 (Clear) to 1.0 (Dense Fog) index for DIY BME280."""
   if df_diy.empty:
     return df_diy
 
@@ -183,7 +176,6 @@ def compute_diy_fog_index(df_diy, prox_span=120.0):
     prox = pd.to_numeric(diy_out[prox_col], errors="coerce")
     valid_prox = prox.dropna()
     if not valid_prox.empty:
-      # Clear-sky baseline (~11-15 raw counts) + deadband of 4 counts to ignore sensor noise
       baseline = float(np.percentile(valid_prox, 10))
       noise_floor = baseline + 4.0
       prox_score = ((prox - noise_floor) / prox_span).clip(0.0, 1.0).fillna(0.0)
@@ -192,7 +184,7 @@ def compute_diy_fog_index(df_diy, prox_span=120.0):
   else:
     prox_score = pd.Series(0.0, index=diy_out.index)
 
-  # 2. Thermodynamic Saturation Score (0.0 - 0.55) from Temperature & Humidity
+  # 2. Thermodynamic Saturation Score (0.0 - 0.45) from Temperature & Humidity
   thermo_score = pd.Series(0.0, index=diy_out.index)
   rh_series = None
   if temp_col and hum_col:
@@ -206,14 +198,12 @@ def compute_diy_fog_index(df_diy, prox_span=120.0):
     )
     rh_series = rh
 
-    # Vectorized Magnus dew-point calculation (°F)
     tc = (tf - 32.0) * 5.0 / 9.0
     rh_safe = rh.clip(1.0, 100.0)
     alpha = ((17.27 * tc) / (237.7 + tc)) + np.log(rh_safe / 100.0)
     dew_f = ((237.7 * alpha) / (17.27 - alpha)) * 9.0 / 5.0 + 32.0
     spread_f = (tf - dew_f).clip(lower=0.0)
 
-    # Fog/mist only forms near saturation (spread <= 3.5°F and RH >= 85%)
     spread_factor = ((3.5 - spread_f) / 3.5).clip(0.0, 1.0)
     rh_factor = ((rh - 85.0) / 15.0).clip(0.0, 1.0)
     thermo_score = (0.45 * spread_factor * rh_factor).fillna(0.0)
@@ -228,9 +218,13 @@ def compute_diy_fog_index(df_diy, prox_span=120.0):
   # 3. Hardware Fog Detected Flag override
   if flag_col:
     fog_flag = pd.to_numeric(diy_out[flag_col], errors="coerce").fillna(0)
-    combined_fog = np.where(fog_flag >= 1, np.maximum(combined_fog, 0.85), combined_fog)
+    combined_fog = np.where(
+        fog_flag >= 1, np.maximum(combined_fog, 0.85), combined_fog
+    )
 
-  diy_out["Fog Index"] = pd.Series(combined_fog, index=diy_out.index).clip(0.0, 1.0).round(2)
+  diy_out["Fog Index"] = (
+      pd.Series(combined_fog, index=diy_out.index).clip(0.0, 1.0).round(2)
+  )
   return diy_out
 
 
@@ -438,6 +432,36 @@ def filter_by_duration(df, duration):
   return temp_df[temp_df["Timestamp"] >= cutoff].copy()
 
 
+def add_daily_cumulative_rain(df, is_cumulative_counter=False):
+  """Computes running daily rainfall total (inches) per calendar day."""
+  if df.empty or "Timestamp" not in df.columns:
+    return df.copy()
+
+  out = df.sort_values("Timestamp").copy()
+  rain_col = find_col(out, ["Rain", "Rainfall", "Precipitation", "Rain (in)"])
+  if not rain_col:
+    return out
+
+  rain_vals = (
+      pd.to_numeric(
+          out[rain_col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
+          errors="coerce",
+      )
+      .fillna(0.0)
+      .clip(lower=0.0)
+  )
+
+  day_key = out["Timestamp"].dt.date
+
+  if is_cumulative_counter:
+    day_start_val = rain_vals.groupby(day_key).transform("first")
+    out["Daily Rain"] = (rain_vals - day_start_val).clip(lower=0.0).round(3)
+  else:
+    out["Daily Rain"] = rain_vals.groupby(day_key).cumsum().round(3)
+
+  return out
+
+
 def extract_station_metrics(df):
   """Extracts core current metrics without falling back to wrong columns."""
   if df.empty:
@@ -481,7 +505,9 @@ def extract_station_metrics(df):
           "WindSpeed",
       ],
   )
-  r_col = find_col(df, ["Rain", "Rainfall", "Precipitation", "Rain (in)"])
+  r_col = find_col(
+      df, ["Daily Rain", "Rain", "Rainfall", "Precipitation", "Rain (in)"]
+  )
   p_col = find_col(
       df, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"]
   )
@@ -506,7 +532,7 @@ def extract_station_metrics(df):
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
       "hum_str": f"{val_h} %" if val_h is not None else "N/A",
       "wind_str": f"{val_w} mph" if val_w is not None else "TBD",
-      "rain_str": f"{val_r} in" if val_r is not None else "0.0 in",
+      "rain_str": f"{val_r:.2f} in" if val_r is not None else "0.00 in",
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
       "vis_str": f"{val_v} mi" if val_v is not None else "N/A",
       "fog_val": val_f,
@@ -614,7 +640,9 @@ def analog_forecast(df, hours_ahead=2):
         if gusts.empty:
           pred_wind_str = f"{round(avg_wind, 1)} mph"
         else:
-          pred_wind_str = f"{round(gusts.min(), 1)} - {round(gusts.max(), 1)} mph"
+          pred_wind_str = (
+              f"{round(gusts.min(), 1)} - {round(gusts.max(), 1)} mph"
+          )
 
   if not future_temps:
     return (
@@ -737,7 +765,9 @@ def render_station_charts(
   wind_col = find_col(
       plot_df, ["Wind Speed (mph)", "Wind Speed", "Wind", "wind_mph"]
   )
-  rain_col = find_col(plot_df, ["Rain", "Rainfall", "Precipitation"])
+  rain_col = find_col(
+      plot_df, ["Daily Rain", "Rain", "Rainfall", "Precipitation"]
+  )
   press_col = find_col(
       plot_df, ["Pressure", "Pressure (hPa)", "Barometric Pressure"]
   )
@@ -840,7 +870,7 @@ def render_station_charts(
           render_styled_chart(
               clean_rain,
               rain_col,
-              "Rainfall Trend",
+              "Daily Cumulative Rainfall (in)",
               "#60a5fa",
               "rgba(96, 165, 250, 0.08)",
               tick_format,
@@ -961,7 +991,6 @@ def render_combined_chart(
   fig = go.Figure()
   colors = {
       "Tempest": "#06b6d4",
-      "La Crosse": "#a855f7",
       "METAR (KSQL)": "#10b981",
       "DIY BME280": "#f97316",
   }
@@ -1011,7 +1040,6 @@ def render_combined_chart(
             )
         )
 
-  # Only render if BOTH stations share valid numeric observations for this metric
   if valid_stations < 2:
     return None
 
@@ -1098,7 +1126,9 @@ def render_dashboard(selected_page):
     st.caption("Real-Time Microclimate Monitoring & Fog Prediction via BME280")
 
     df_diy_raw = load_sheet_data(DIY_SHEET_ID)
-    df_diy = compute_diy_fog_index(df_diy_raw)
+    df_diy = add_daily_cumulative_rain(
+        compute_diy_fog_index(df_diy_raw), is_cumulative_counter=False
+    )
 
     with st.container(border=True):
       m_diy = extract_station_metrics(df_diy)
@@ -1116,14 +1146,15 @@ def render_dashboard(selected_page):
         m1.metric("Temperature", m_diy["temp_str"])
         m2.metric("Humidity", m_diy["hum_str"])
         m3.metric("Wind Speed", m_diy["wind_str"])
-        m4.metric("Rain", m_diy["rain_str"])
+        m4.metric("Rain (Today)", m_diy["rain_str"])
         m5.metric(
             "Fog Index",
             f"{m_diy['fog_val']:.2f}" if m_diy["fog_val"] is not None else "N/A",
         )
         fog_desc = classify_fog_label(m_diy["fog_val"])
         st.caption(
-            f"Latest observation: {m_diy['time_str']} • Fog Status: **{fog_desc}**"
+            f"Latest observation: {m_diy['time_str']} • Fog Status:"
+            f" **{fog_desc}**"
         )
       else:
         st.warning("No live data available for DIY Station.")
@@ -1189,6 +1220,7 @@ def render_dashboard(selected_page):
         filter_by_duration(df_diy, timeframe.lower()),
         timeframe.lower(),
         include_wind=True,
+        include_rain=True,
         custom_press_range=[985.0, 1005.0],
     )
 
@@ -1199,7 +1231,7 @@ def render_dashboard(selected_page):
     )
     st.caption("Real-Time Telemetry via WeatherFlow Tempest")
 
-    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_tempest = add_daily_cumulative_rain(load_sheet_data(TEMPEST_SHEET_ID))
 
     with st.container(border=True):
       m_tempest = extract_station_metrics(df_tempest)
@@ -1217,7 +1249,7 @@ def render_dashboard(selected_page):
         m2.metric("Wind Speed", m_tempest["wind_str"])
         m3.metric("Humidity", m_tempest["hum_str"])
         m4.metric("Pressure", m_tempest["press_str"])
-        m5.metric("Rain", m_tempest["rain_str"])
+        m5.metric("Rain (Today)", m_tempest["rain_str"])
         st.caption(f"Latest observation: {m_tempest['time_str']}")
       else:
         st.warning("No live data available for Tempest.")
@@ -1316,10 +1348,10 @@ def render_dashboard(selected_page):
             else ("#d29922" if flt_cat == "MVFR" else "#f85149")
         )
         cat_badge = (
-            f"<span style='background:rgba(240,246,252,0.08); color:{cat_color};"
-            f" border:1px solid {cat_color}; padding:2px 10px;"
-            " border-radius:12px; font-size:0.75rem;"
-            f" font-weight:700; margin-left:6px;'>{flt_cat}</span>"
+            "<span style='background:rgba(240,246,252,0.08);"
+            f" color:{cat_color}; border:1px solid {cat_color}; padding:2px"
+            " 10px; border-radius:12px; font-size:0.75rem; font-weight:700;"
+            f" margin-left:6px;'>{flt_cat}</span>"
         )
 
       st.markdown(
@@ -1394,8 +1426,8 @@ def render_dashboard(selected_page):
           key="comp_station_picker",
       )
 
-    df_diy = load_sheet_data(DIY_SHEET_ID)
-    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_diy = add_daily_cumulative_rain(load_sheet_data(DIY_SHEET_ID))
+    df_tempest = add_daily_cumulative_rain(load_sheet_data(TEMPEST_SHEET_ID))
     df_metar = load_sheet_data(METAR_SHEET_ID)
 
     # Normalize both DIY BME280 and METAR onto the same 0.0 - 1.0 Fog Index scale
@@ -1414,11 +1446,12 @@ def render_dashboard(selected_page):
             unsafe_allow_html=True,
         )
         if m_tempest:
-          m1, m2, m3, m4 = st.columns(4)
+          m1, m2, m3, m4, m5 = st.columns(5)
           m1.metric("Temperature", m_tempest["temp_str"])
           m2.metric("Wind Speed", m_tempest["wind_str"])
           m3.metric("Humidity", m_tempest["hum_str"])
           m4.metric("Pressure", m_tempest["press_str"])
+          m5.metric("Rain (Today)", m_tempest["rain_str"])
           st.caption(f"Latest observation: {m_tempest['time_str']}")
         else:
           st.warning("No live data available for Tempest.")
@@ -1485,40 +1518,69 @@ def render_dashboard(selected_page):
     chart_config = {"responsive": True, "displayModeBar": False}
 
     # Unique ordered registry of every metric DIY BME280 can share with the selected station
-    # Unique ordered registry of every metric DIY BME280 can share with the selected station
     shared_metrics = [
         {
             "key": "temp",
-            "cols": ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp"],
+            "cols": [
+                "Temperature",
+                "Temp",
+                "Temp (F)",
+                "temp_f",
+                "Outdoor Temp",
+                "Air Temp",
+            ],
             "title": "Temperature Trend",
             "suffix": "°F",
             "y_range": None,
         },
         {
             "key": "hum",
-            "cols": ["Humidity (%)", "Humidity", "Relative Humidity", "hum", "Outdoor Humidity"],
+            "cols": [
+                "Humidity (%)",
+                "Humidity",
+                "Relative Humidity",
+                "hum",
+                "Outdoor Humidity",
+            ],
             "title": "Relative Humidity Trend",
             "suffix": "%",
             "y_range": None,
         },
         {
             "key": "press",
-            "cols": ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"],
+            "cols": [
+                "Pressure",
+                "Pressure (hPa)",
+                "Barometric Pressure",
+                "press",
+            ],
             "title": "Barometric Pressure Trend",
             "suffix": "hPa",
             "y_range": None,
         },
         {
             "key": "wind",
-            "cols": ["Wind Speed (mph)", "Wind Speed", "Wind", "wind_mph", "Wind_Speed"],
+            "cols": [
+                "Wind Speed (mph)",
+                "Wind Speed",
+                "Wind",
+                "wind_mph",
+                "Wind_Speed",
+            ],
             "title": "Wind Speed Trend",
             "suffix": "mph",
             "y_range": None,
         },
         {
             "key": "rain",
-            "cols": ["Rain", "Rainfall", "Precipitation", "Rain (in)"],
-            "title": "Rainfall Trend",
+            "cols": [
+                "Daily Rain",
+                "Rain",
+                "Rainfall",
+                "Precipitation",
+                "Rain (in)",
+            ],
+            "title": "Daily Cumulative Rainfall",
             "suffix": "in",
             "y_range": None,
         },

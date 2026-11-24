@@ -1212,11 +1212,12 @@ def render_dashboard(selected_page):
           unsafe_allow_html=True,
       )
       if m_tempest:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Temperature", m_tempest["temp_str"])
         m2.metric("Wind Speed", m_tempest["wind_str"])
         m3.metric("Humidity", m_tempest["hum_str"])
         m4.metric("Pressure", m_tempest["press_str"])
+        m5.metric("Rain", m_tempest["rain_str"])
         st.caption(f"Latest observation: {m_tempest['time_str']}")
       else:
         st.warning("No live data available for Tempest.")
@@ -1232,6 +1233,7 @@ def render_dashboard(selected_page):
         filter_by_duration(df_tempest, timeframe.lower()),
         timeframe.lower(),
         include_wind=True,
+        include_rain=True,
     )
 
   elif selected_page == "LACROSSE":

@@ -242,13 +242,19 @@ def normalize_fog_signals(df_diy, df_metar=None, prox_span=120.0):
   if not metar_out.empty:
     fog_col = find_col(metar_out, ["Fog", "Fog Index"])
     vis_col = find_col(metar_out, ["Visibility", "visib"])
-    if fog_col:
-      metar_out["Fog Index"] = pd.to_numeric(
-          metar_out[fog_col], errors="coerce"
-      ).clip(0.0, 1.0)
-    elif vis_col:
+
+    fog_series = (
+        pd.to_numeric(metar_out[fog_col], errors="coerce")
+        if fog_col
+        else pd.Series(np.nan, index=metar_out.index)
+    )
+
+    if vis_col:
       vis = pd.to_numeric(metar_out[vis_col], errors="coerce").clip(0.0, 10.0)
-      metar_out["Fog Index"] = (1.0 - (vis / 10.0)).round(2)
+      vis_derived = (1.0 - (vis / 10.0)).round(2)
+      fog_series = fog_series.fillna(vis_derived)
+
+    metar_out["Fog Index"] = fog_series.fillna(0.0).clip(0.0, 1.0).round(2)
 
   return diy_out, metar_out
 
@@ -1367,7 +1373,7 @@ def render_dashboard(selected_page):
 
   else:
     # ---------------- STATION COMPARISON PAGE ----------------
-    comp_header_l, comp_header_r = st.columns([1.6, 1.4])
+    comp_header_l, comp_header_r = st.columns([2, 1])
     with comp_header_l:
       st.markdown(
           "<h2 style='margin-bottom:0.2rem;'>📊 Station Comparison</h2>",
@@ -1379,7 +1385,7 @@ def render_dashboard(selected_page):
     with comp_header_r:
       comp_station_choice = st.radio(
           "Compare With",
-          ["Tempest", "La Crosse", "METAR (KSQL)"],
+          ["Tempest", "METAR (KSQL)"],
           index=0,
           horizontal=True,
           label_visibility="collapsed",
@@ -1388,7 +1394,6 @@ def render_dashboard(selected_page):
 
     df_diy = load_sheet_data(DIY_SHEET_ID)
     df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
-    df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
     df_metar = load_sheet_data(METAR_SHEET_ID)
 
     # Normalize both DIY BME280 and METAR onto the same 0.0 - 1.0 Fog Index scale
@@ -1415,27 +1420,6 @@ def render_dashboard(selected_page):
           st.caption(f"Latest observation: {m_tempest['time_str']}")
         else:
           st.warning("No live data available for Tempest.")
-
-    elif comp_station_choice == "La Crosse":
-      target_df = df_lacrosse
-      with st.container(border=True):
-        m_lacrosse = extract_station_metrics(df_lacrosse)
-        status_tag = (
-            get_live_badge(m_lacrosse["raw_ts"]) if m_lacrosse else "⚪ OFFLINE"
-        )
-        st.markdown(
-            "<div style='display:flex; justify-content:space-between;"
-            f" align-items:center;'><b>🏡 La Crosse Station</b>{status_tag}</div>",
-            unsafe_allow_html=True,
-        )
-        if m_lacrosse:
-          m1, m2, m3 = st.columns(3)
-          m1.metric("Temperature", m_lacrosse["temp_str"])
-          m2.metric("Wind Speed", m_lacrosse["wind_str"])
-          m3.metric("Humidity", m_lacrosse["hum_str"])
-          st.caption(f"Latest observation: {m_lacrosse['time_str']}")
-        else:
-          st.warning("No live data available for La Crosse.")
 
     else:
       target_df = df_metar_norm
@@ -1484,12 +1468,13 @@ def render_dashboard(selected_page):
     day_x_range = None
     tick_format = "%b %d, %-I:%M %p"
     if duration_key == "daily":
-      latest_ts = None
-      for df in df_dict_all.values():
-        if not df.empty:
-          latest_ts = df["Timestamp"].max()
-          break
-      if latest_ts:
+      max_times = [
+          df["Timestamp"].max()
+          for df in df_dict_all.values()
+          if not df.empty and "Timestamp" in df.columns
+      ]
+      if max_times:
+        latest_ts = max(max_times)
         day_start = latest_ts.normalize()
         day_end = day_start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         day_x_range = [day_start, day_end]
@@ -1497,11 +1482,11 @@ def render_dashboard(selected_page):
 
     chart_config = {"responsive": True, "displayModeBar": False}
 
-    # Unique ordered registry of every metric DIY BME280 can share with another station
+    # Unique ordered registry of every metric DIY BME280 can share with the selected station
     shared_metrics = [
         {
             "key": "fog",
-            "cols": ["Fog Index", "Fog"],
+            "cols": ["Fog Index"],
             "title": "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
             "suffix": "",
             "y_range": [-0.05, 1.05],

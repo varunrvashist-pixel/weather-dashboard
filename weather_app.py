@@ -1483,14 +1483,8 @@ def render_dashboard(selected_page):
     chart_config = {"responsive": True, "displayModeBar": False}
 
     # Unique ordered registry of every metric DIY BME280 can share with the selected station
+    # Unique ordered registry of every metric DIY BME280 can share with the selected station
     shared_metrics = [
-        {
-            "key": "fog",
-            "cols": ["Fog Index"],
-            "title": "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
-            "suffix": "",
-            "y_range": [-0.05, 1.05],
-        },
         {
             "key": "temp",
             "cols": ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp"],
@@ -1525,6 +1519,13 @@ def render_dashboard(selected_page):
             "title": "Rainfall Trend",
             "suffix": "in",
             "y_range": None,
+        },
+        {
+            "key": "fog",
+            "cols": ["Fog Index"],
+            "title": "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
+            "suffix": "",
+            "y_range": [-0.05, 1.05],
         },
     ]
 

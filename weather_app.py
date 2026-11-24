@@ -2,7 +2,6 @@ import base64
 from datetime import datetime
 import json
 import os
-import re
 from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 import gspread
@@ -103,7 +102,7 @@ DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
 METAR_SHEET_ID = "1ZMwL4PO-vWTFPPk829Z6NCm5853zbh_ykmMn6mhBZaQ"
 
 
-# ---------------- MICROCLIMATE & DEW POINT HELPERS ----------------
+# ---------------- MICROCLIMATE, DEW POINT & FOG HELPERS ----------------
 def clean_float(val):
   if val is None or pd.isna(val):
     return None
@@ -155,10 +154,90 @@ def compute_relative_humidity(temp_c, dewp_c):
     return None
 
 
-def normalize_fog_signals(df_diy, df_metar, prox_min=10.0, prox_max=500.0):
-  """Maps BME280 proximity readings and METAR visibility/fog onto a 0.0 (Clear) to 1.0 (Dense Fog) scale."""
+def compute_diy_fog_index(df_diy, prox_span=120.0):
+  """Computes an accurate 0.0 (Clear) to 1.0 (Dense Fog) index for DIY BME280.
+
+  Combines:
+    1. Baseline-calibrated IR proximity backscatter ('Proximity (raw)')
+    2. Hardware 'Fog Detected' flag (if triggered)
+    3. BME280 thermodynamic saturation (Humidity & Dew-Point Spread) so clear dry
+       days stay at 0.00 and pre-fog mist aligns closely with METAR visibility.
+  """
+  if df_diy.empty:
+    return df_diy
+
   diy_out = df_diy.copy()
-  metar_out = df_metar.copy()
+
+  prox_col = find_col(
+      diy_out,
+      ["Proximity (raw)", "Proximity", "Prox", "proximity", "IR Proximity"],
+  )
+  flag_col = find_col(diy_out, ["Fog Detected", "Fog Flag"])
+  temp_col = find_col(diy_out, ["Temperature", "Temp", "Temp (F)", "temp_f"])
+  hum_col = find_col(
+      diy_out, ["Humidity (%)", "Humidity", "Relative Humidity", "hum"]
+  )
+
+  # 1. Proximity Score (0.0 - 1.0) anchored to clear-sky 10th percentile baseline
+  if prox_col:
+    prox = pd.to_numeric(diy_out[prox_col], errors="coerce")
+    valid_prox = prox.dropna()
+    if not valid_prox.empty:
+      # Clear-sky baseline (~11-15 raw counts) + deadband of 4 counts to ignore sensor noise
+      baseline = float(np.percentile(valid_prox, 10))
+      noise_floor = baseline + 4.0
+      prox_score = ((prox - noise_floor) / prox_span).clip(0.0, 1.0).fillna(0.0)
+    else:
+      prox_score = pd.Series(0.0, index=diy_out.index)
+  else:
+    prox_score = pd.Series(0.0, index=diy_out.index)
+
+  # 2. Thermodynamic Saturation Score (0.0 - 0.55) from Temperature & Humidity
+  thermo_score = pd.Series(0.0, index=diy_out.index)
+  rh_series = None
+  if temp_col and hum_col:
+    tf = pd.to_numeric(
+        diy_out[temp_col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
+        errors="coerce",
+    )
+    rh = pd.to_numeric(
+        diy_out[hum_col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
+        errors="coerce",
+    )
+    rh_series = rh
+
+    # Vectorized Magnus dew-point calculation (°F)
+    tc = (tf - 32.0) * 5.0 / 9.0
+    rh_safe = rh.clip(1.0, 100.0)
+    alpha = ((17.27 * tc) / (237.7 + tc)) + np.log(rh_safe / 100.0)
+    dew_f = ((237.7 * alpha) / (17.27 - alpha)) * 9.0 / 5.0 + 32.0
+    spread_f = (tf - dew_f).clip(lower=0.0)
+
+    # Fog/mist only forms near saturation (spread <= 3.5°F and RH >= 85%)
+    spread_factor = ((3.5 - spread_f) / 3.5).clip(0.0, 1.0)
+    rh_factor = ((rh - 85.0) / 15.0).clip(0.0, 1.0)
+    thermo_score = (0.45 * spread_factor * rh_factor).fillna(0.0)
+
+  # Dampen false IR proximity spikes if ambient air is dry (RH < 75%)
+  if rh_series is not None:
+    dry_mask = rh_series < 75.0
+    prox_score = np.where(dry_mask, prox_score * 0.25, prox_score)
+
+  combined_fog = np.maximum(prox_score, thermo_score)
+
+  # 3. Hardware Fog Detected Flag override
+  if flag_col:
+    fog_flag = pd.to_numeric(diy_out[flag_col], errors="coerce").fillna(0)
+    combined_fog = np.where(fog_flag >= 1, np.maximum(combined_fog, 0.85), combined_fog)
+
+  diy_out["Fog Index"] = pd.Series(combined_fog, index=diy_out.index).clip(0.0, 1.0).round(2)
+  return diy_out
+
+
+def normalize_fog_signals(df_diy, df_metar=None, prox_span=120.0):
+  """Maps both DIY BME280 and METAR onto the same 0.0 (Clear) to 1.0 (Dense Fog) scale."""
+  diy_out = compute_diy_fog_index(df_diy, prox_span=prox_span)
+  metar_out = df_metar.copy() if df_metar is not None else pd.DataFrame()
 
   if not metar_out.empty:
     fog_col = find_col(metar_out, ["Fog", "Fog Index"])
@@ -170,15 +249,6 @@ def normalize_fog_signals(df_diy, df_metar, prox_min=10.0, prox_max=500.0):
     elif vis_col:
       vis = pd.to_numeric(metar_out[vis_col], errors="coerce").clip(0.0, 10.0)
       metar_out["Fog Index"] = (1.0 - (vis / 10.0)).round(2)
-
-  if not diy_out.empty:
-    prox_col = find_col(
-        diy_out, ["Proximity", "Prox", "Fog", "proximity", "IR Proximity"]
-    )
-    if prox_col:
-      prox = pd.to_numeric(diy_out[prox_col], errors="coerce")
-      scaled = (prox - prox_min) / (prox_max - prox_min)
-      diy_out["Fog Index"] = scaled.clip(0.0, 1.0).round(2)
 
   return diy_out, metar_out
 
@@ -307,7 +377,7 @@ def load_sheet_data(sheet_id):
     else:
       return pd.DataFrame()
   except Exception as e:
-    st.error(f"Error loading sheet {sheet_id}: {e}")
+    st.error(f"Error loading sheet: {e}")
     return pd.DataFrame()
 
 
@@ -384,8 +454,8 @@ def extract_station_metrics(df):
   h_col = find_col(
       df,
       [
-          "Humidity",
           "Humidity (%)",
+          "Humidity",
           "Relative Humidity",
           "hum",
           "Outdoor Humidity",
@@ -395,8 +465,8 @@ def extract_station_metrics(df):
   w_col = find_col(
       df,
       [
-          "Wind Speed",
           "Wind Speed (mph)",
+          "Wind Speed",
           "Wind",
           "Wind_Speed",
           "wind_mph",
@@ -410,7 +480,8 @@ def extract_station_metrics(df):
       df, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"]
   )
   v_col = find_col(df, ["Visibility", "visib"])
-  f_col = find_col(df, ["Fog", "Fog Index"])
+  f_col = find_col(df, ["Fog Index", "Fog"])
+  c_col = find_col(df, ["Conditions", "wxString"])
 
   val_t = clean_float(latest[t_col]) if t_col else None
   val_h = clean_float(latest[h_col]) if h_col else None
@@ -419,6 +490,11 @@ def extract_station_metrics(df):
   val_p = clean_float(latest[p_col]) if p_col else None
   val_v = clean_float(latest[v_col]) if v_col else None
   val_f = clean_float(latest[f_col]) if f_col else None
+  val_c = (
+      str(latest[c_col]).strip()
+      if c_col and pd.notna(latest[c_col]) and str(latest[c_col]).strip()
+      else None
+  )
 
   return {
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
@@ -428,6 +504,7 @@ def extract_station_metrics(df):
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
       "vis_str": f"{val_v} mi" if val_v is not None else "N/A",
       "fog_val": val_f,
+      "cond_str": val_c,
       "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }
@@ -448,9 +525,9 @@ def analog_forecast(df, hours_ahead=2):
   curr_time = current["Timestamp"]
 
   t_col = find_col(df_clean, ["Temperature", "Temp", "Temp (F)", "temp_f"])
-  h_col = find_col(df_clean, ["Humidity", "Humidity (%)", "Relative Humidity"])
+  h_col = find_col(df_clean, ["Humidity (%)", "Humidity", "Relative Humidity"])
   w_col = find_col(
-      df_clean, ["Wind Speed", "Wind Speed (mph)", "Wind", "wind_mph"]
+      df_clean, ["Wind Speed (mph)", "Wind Speed", "Wind", "wind_mph"]
   )
   r_col = find_col(df_clean, ["Rain", "Rainfall", "Precipitation"])
 
@@ -652,14 +729,14 @@ def render_station_charts(
   temp_col = find_col(plot_df, ["Temperature", "Temp", "Temp (F)", "temp_f"])
   hum_col = find_col(plot_df, ["Humidity (%)", "Humidity", "Relative Humidity"])
   wind_col = find_col(
-      plot_df, ["Wind Speed", "Wind Speed (mph)", "Wind", "wind_mph"]
+      plot_df, ["Wind Speed (mph)", "Wind Speed", "Wind", "wind_mph"]
   )
   rain_col = find_col(plot_df, ["Rain", "Rainfall", "Precipitation"])
   press_col = find_col(
       plot_df, ["Pressure", "Pressure (hPa)", "Barometric Pressure"]
   )
   vis_col = find_col(plot_df, ["Visibility", "visib"])
-  fog_col = find_col(plot_df, ["Fog", "Fog Index"])
+  fog_col = find_col(plot_df, ["Fog Index", "Fog"])
 
   chart_config = {"responsive": True, "displayModeBar": False}
 
@@ -809,7 +886,7 @@ def render_station_charts(
               "rgba(16, 185, 129, 0.08)",
               tick_format,
               day_x_range,
-              y_range=[0.0, 10.5],
+              y_range=[-0.5, 10.5],
           ),
           use_container_width=True,
           config=chart_config,
@@ -827,7 +904,7 @@ def render_station_charts(
           clean_fog,
           x="Timestamp",
           y=fog_col,
-          title="Normalized Fog Index",
+          title="Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
           markers=show_markers,
           custom_data=["Fog_Label"],
       )
@@ -864,7 +941,7 @@ def render_station_charts(
       st.plotly_chart(fig_fog, use_container_width=True, config=chart_config)
 
 
-# ---------------- COMBINED MULTI-LINE CHARTS ----------------
+# ---------------- COMBINED MULTI-LINE CHARTS (SHARED METRICS ONLY) ----------------
 def render_combined_chart(
     df_dict,
     col_options,
@@ -874,13 +951,15 @@ def render_combined_chart(
     day_x_range,
     y_range=None,
 ):
+  """Plots a comparison chart ONLY when BOTH DIY BME280 and the selected station have valid data."""
   fig = go.Figure()
   colors = {
       "Tempest": "#06b6d4",
-      "DIY BME280": "#f97316",
+      "La Crosse": "#a855f7",
       "METAR (KSQL)": "#10b981",
+      "DIY BME280": "#f97316",
   }
-  has_data = False
+  valid_stations = 0
 
   for station_name, df in df_dict.items():
     if df.empty:
@@ -897,7 +976,7 @@ def render_combined_chart(
       )
 
       if not clean_df.empty:
-        has_data = True
+        valid_stations += 1
         trace_mode = "lines+markers" if len(clean_df) <= 15 else "lines"
 
         if "Fog" in title:
@@ -925,9 +1004,9 @@ def render_combined_chart(
                 hovertemplate=hover_tmpl,
             )
         )
-        
 
-  if not has_data:
+  # Only render if BOTH stations share valid numeric observations for this metric
+  if valid_stations < 2:
     return None
 
   yaxis_dict = dict(
@@ -995,6 +1074,11 @@ for col, (label, page_key) in zip(nav_cols, tabs):
         args=(page_key,),
     )
 
+st.markdown(
+    "<hr style='margin-top: 0.5rem; margin-bottom: 1.5rem;'>",
+    unsafe_allow_html=True,
+)
+
 
 # ---------------- RENDER SELECTED DASHBOARD ----------------
 @st.fragment(run_every="180s")
@@ -1007,7 +1091,8 @@ def render_dashboard(selected_page):
     )
     st.caption("Real-Time Microclimate Monitoring & Fog Prediction via BME280")
 
-    df_diy = load_sheet_data(DIY_SHEET_ID)
+    df_diy_raw = load_sheet_data(DIY_SHEET_ID)
+    df_diy = compute_diy_fog_index(df_diy_raw)
 
     with st.container(border=True):
       m_diy = extract_station_metrics(df_diy)
@@ -1021,12 +1106,19 @@ def render_dashboard(selected_page):
       )
 
       if m_diy:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Temperature", m_diy["temp_str"])
         m2.metric("Humidity", m_diy["hum_str"])
         m3.metric("Wind Speed", m_diy["wind_str"])
         m4.metric("Rain", m_diy["rain_str"])
-        st.caption(f"Latest observation: {m_diy['time_str']}")
+        m5.metric(
+            "Fog Index",
+            f"{m_diy['fog_val']:.2f}" if m_diy["fog_val"] is not None else "N/A",
+        )
+        fog_desc = classify_fog_label(m_diy["fog_val"])
+        st.caption(
+            f"Latest observation: {m_diy['time_str']} • Fog Status: **{fog_desc}**"
+        )
       else:
         st.warning("No live data available for DIY Station.")
 
@@ -1090,7 +1182,7 @@ def render_dashboard(selected_page):
     render_station_charts(
         filter_by_duration(df_diy, timeframe.lower()),
         timeframe.lower(),
-        include_wind=False,
+        include_wind=True,
         custom_press_range=[985.0, 1005.0],
     )
 
@@ -1246,9 +1338,14 @@ def render_dashboard(selected_page):
               f" color:#79c0ff;'>{live_banner['raw_ob']}</div>",
               unsafe_allow_html=True,
           )
+        cond_text = (
+            f" • Conditions: **{m_metar['cond_str']}**"
+            if m_metar.get("cond_str")
+            else ""
+        )
         st.caption(
             f"Latest logged observation: {m_metar['time_str']} • Normalized Fog"
-            f" Index: {fog_val if fog_val is not None else 'N/A'}"
+            f" Index: {fog_val if fog_val is not None else 'N/A'}{cond_text}"
         )
       else:
         st.warning("No logged data available in the METAR Google Sheet yet.")
@@ -1270,19 +1367,19 @@ def render_dashboard(selected_page):
 
   else:
     # ---------------- STATION COMPARISON PAGE ----------------
-    comp_header_l, comp_header_r = st.columns([2, 1])
+    comp_header_l, comp_header_r = st.columns([1.6, 1.4])
     with comp_header_l:
       st.markdown(
           "<h2 style='margin-bottom:0.2rem;'>📊 Station Comparison</h2>",
           unsafe_allow_html=True,
       )
       st.caption(
-          "Validate DIY BME280 Sensors Against Tempest & KSQL METAR"
+          "Compare Every Shared Metric Between DIY BME280 & Selected Station"
       )
     with comp_header_r:
       comp_station_choice = st.radio(
           "Compare With",
-          ["Tempest", "METAR (KSQL)"],
+          ["Tempest", "La Crosse", "METAR (KSQL)"],
           index=0,
           horizontal=True,
           label_visibility="collapsed",
@@ -1291,12 +1388,14 @@ def render_dashboard(selected_page):
 
     df_diy = load_sheet_data(DIY_SHEET_ID)
     df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_lacrosse = load_sheet_data(LACROSSE_SHEET_ID)
     df_metar = load_sheet_data(METAR_SHEET_ID)
 
-    # Normalize proximity sensor & METAR visibility to 0.0 - 1.0 Fog Index
+    # Normalize both DIY BME280 and METAR onto the same 0.0 - 1.0 Fog Index scale
     df_diy_norm, df_metar_norm = normalize_fog_signals(df_diy, df_metar)
 
     if comp_station_choice == "Tempest":
+      target_df = df_tempest
       with st.container(border=True):
         m_tempest = extract_station_metrics(df_tempest)
         status_tag = (
@@ -1308,14 +1407,38 @@ def render_dashboard(selected_page):
             unsafe_allow_html=True,
         )
         if m_tempest:
-          m1, m2, m3 = st.columns(3)
+          m1, m2, m3, m4 = st.columns(4)
           m1.metric("Temperature", m_tempest["temp_str"])
           m2.metric("Wind Speed", m_tempest["wind_str"])
           m3.metric("Humidity", m_tempest["hum_str"])
+          m4.metric("Pressure", m_tempest["press_str"])
           st.caption(f"Latest observation: {m_tempest['time_str']}")
         else:
           st.warning("No live data available for Tempest.")
+
+    elif comp_station_choice == "La Crosse":
+      target_df = df_lacrosse
+      with st.container(border=True):
+        m_lacrosse = extract_station_metrics(df_lacrosse)
+        status_tag = (
+            get_live_badge(m_lacrosse["raw_ts"]) if m_lacrosse else "⚪ OFFLINE"
+        )
+        st.markdown(
+            "<div style='display:flex; justify-content:space-between;"
+            f" align-items:center;'><b>🏡 La Crosse Station</b>{status_tag}</div>",
+            unsafe_allow_html=True,
+        )
+        if m_lacrosse:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_lacrosse["temp_str"])
+          m2.metric("Wind Speed", m_lacrosse["wind_str"])
+          m3.metric("Humidity", m_lacrosse["hum_str"])
+          st.caption(f"Latest observation: {m_lacrosse['time_str']}")
+        else:
+          st.warning("No live data available for La Crosse.")
+
     else:
+      target_df = df_metar_norm
       with st.container(border=True):
         m_metar = extract_station_metrics(df_metar_norm)
         status_tag = (
@@ -1335,7 +1458,7 @@ def render_dashboard(selected_page):
           m3.metric("Visibility", m_metar["vis_str"])
           m4.metric(
               "Fog Index",
-              f"{m_metar['fog_val']}"
+              f"{m_metar['fog_val']:.2f}"
               if m_metar["fog_val"] is not None
               else "N/A",
           )
@@ -1353,16 +1476,10 @@ def render_dashboard(selected_page):
     )
     duration_key = timeframe.lower()
 
-    if comp_station_choice == "Tempest":
-      df_dict_all = {
-          "Tempest": filter_by_duration(df_tempest, duration_key),
-          "DIY BME280": filter_by_duration(df_diy_norm, duration_key),
-      }
-    else:
-      df_dict_all = {
-          "METAR (KSQL)": filter_by_duration(df_metar_norm, duration_key),
-          "DIY BME280": filter_by_duration(df_diy_norm, duration_key),
-      }
+    df_dict_all = {
+        comp_station_choice: filter_by_duration(target_df, duration_key),
+        "DIY BME280": filter_by_duration(df_diy_norm, duration_key),
+    }
 
     day_x_range = None
     tick_format = "%b %d, %-I:%M %p"
@@ -1380,64 +1497,77 @@ def render_dashboard(selected_page):
 
     chart_config = {"responsive": True, "displayModeBar": False}
 
-    # If comparing against METAR, show the Normalized 0-1 Fog Index overlay right at the top
-    if comp_station_choice == "METAR (KSQL)":
-      fig_fog = render_combined_chart(
+    # Unique ordered registry of every metric DIY BME280 can share with another station
+    shared_metrics = [
+        {
+            "key": "fog",
+            "cols": ["Fog Index", "Fog"],
+            "title": "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
+            "suffix": "",
+            "y_range": [-0.05, 1.05],
+        },
+        {
+            "key": "temp",
+            "cols": ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp"],
+            "title": "Temperature Trend",
+            "suffix": "°F",
+            "y_range": None,
+        },
+        {
+            "key": "hum",
+            "cols": ["Humidity (%)", "Humidity", "Relative Humidity", "hum", "Outdoor Humidity"],
+            "title": "Relative Humidity Trend",
+            "suffix": "%",
+            "y_range": None,
+        },
+        {
+            "key": "press",
+            "cols": ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"],
+            "title": "Barometric Pressure Trend",
+            "suffix": "hPa",
+            "y_range": None,
+        },
+        {
+            "key": "wind",
+            "cols": ["Wind Speed (mph)", "Wind Speed", "Wind", "wind_mph", "Wind_Speed"],
+            "title": "Wind Speed Trend",
+            "suffix": "mph",
+            "y_range": None,
+        },
+        {
+            "key": "rain",
+            "cols": ["Rain", "Rainfall", "Precipitation", "Rain (in)"],
+            "title": "Rainfall Trend",
+            "suffix": "in",
+            "y_range": None,
+        },
+    ]
+
+    plotted_keys = set()
+    charts_rendered = 0
+
+    for metric in shared_metrics:
+      if metric["key"] in plotted_keys:
+        continue
+      fig = render_combined_chart(
           df_dict_all,
-          ["Fog Index", "Fog"],
-          "Fog Validation: Proximity Sensor vs. KSQL METAR (0 = Clear, 1 = Dense Fog)",
-          "",
+          metric["cols"],
+          metric["title"],
+          metric["suffix"],
           tick_format,
           day_x_range,
-          y_range=[0.0, 1.05],
+          y_range=metric["y_range"],
       )
-      if fig_fog:
-        st.plotly_chart(fig_fog, use_container_width=True, config=chart_config)
+      if fig is not None:
+        st.plotly_chart(fig, use_container_width=True, config=chart_config)
+        plotted_keys.add(metric["key"])
+        charts_rendered += 1
 
-    fig_temp = render_combined_chart(
-        df_dict_all,
-        ["Temperature", "Temp", "Temp (F)", "temp_f", "Outdoor Temp", "Air Temp"],
-        "Temperature Trend",
-        "°F",
-        tick_format,
-        day_x_range,
-    )
-    if fig_temp:
-      st.plotly_chart(fig_temp, use_container_width=True, config=chart_config)
-
-    fig_hum = render_combined_chart(
-        df_dict_all,
-        ["Humidity (%)", "Humidity", "Relative Humidity", "hum", "Outdoor Humidity"],
-        "Relative Humidity Trend",
-        "%",
-        tick_format,
-        day_x_range,
-    )
-    if fig_hum:
-      st.plotly_chart(fig_hum, use_container_width=True, config=chart_config)
-
-    fig_wind = render_combined_chart(
-        df_dict_all,
-        ["Wind Speed", "Wind Speed (mph)", "Wind", "wind_mph", "Wind_Speed"],
-        "Wind Speed Trend",
-        "mph",
-        tick_format,
-        day_x_range,
-    )
-    if fig_wind:
-      st.plotly_chart(fig_wind, use_container_width=True, config=chart_config)
-
-    if comp_station_choice == "Tempest":
-      fig_rain = render_combined_chart(
-          df_dict_all,
-          ["Rain", "Rainfall", "Precipitation"],
-          "Rainfall Trend",
-          "in",
-          tick_format,
-          day_x_range,
+    if charts_rendered == 0:
+      st.info(
+          f"No overlapping data available between DIY BME280 and"
+          f" {comp_station_choice} in the {timeframe} timeframe."
       )
-      if fig_rain:
-        st.plotly_chart(fig_rain, use_container_width=True, config=chart_config)
 
 
 render_dashboard(st.session_state.current_page)

@@ -566,9 +566,17 @@ def render_styled_chart(
     day_x_range,
     y_range=None,
 ):
-  fig = px.line(clean_df, x="Timestamp", y=col_name, title=title)
+  show_markers = len(clean_df) <= 15
+  fig = px.line(
+      clean_df,
+      x="Timestamp",
+      y=col_name,
+      title=title,
+      markers=show_markers,
+  )
   fig.update_traces(
       line=dict(color=color_hex, width=2.5),
+      marker=dict(size=7, color=color_hex),
       fill="tozeroy",
       fillcolor=fill_rgba,
       hovertemplate="%{x|%b %d, %-I:%M %p}<br><b>%{y}</b><extra></extra>",
@@ -845,13 +853,15 @@ def render_combined_chart(
 
       if not clean_df.empty:
         has_data = True
+        trace_mode = "lines+markers" if len(clean_df) <= 15 else "lines"
         fig.add_trace(
             go.Scatter(
                 x=clean_df["Timestamp"],
                 y=clean_df[col],
-                mode="lines",
+                mode=trace_mode,
                 name=station_name,
                 line=dict(color=colors.get(station_name, "#ffffff"), width=2.5),
+                marker=dict(size=7, color=colors.get(station_name, "#ffffff")),
                 hovertemplate=(
                     f"%{{x|%b %d, %-I:%M %p}}<br><b>%{{y}} {y_suffix}</b>"
                     f"<extra>{station_name}</extra>"

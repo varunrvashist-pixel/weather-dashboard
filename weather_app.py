@@ -183,6 +183,24 @@ def normalize_fog_signals(df_diy, df_metar, prox_min=10.0, prox_max=500.0):
   return diy_out, metar_out
 
 
+def classify_fog_label(val):
+  """Maps a 0.0-1.0 Fog Index to 6 human-readable hover levels."""
+  if val is None or pd.isna(val):
+    return "N/A"
+  if val < 0.10:
+    return f"Clear ({val:.2f})"
+  elif val < 0.25:
+    return f"Trace Mist ({val:.2f})"
+  elif val < 0.45:
+    return f"Light Fog ({val:.2f})"
+  elif val < 0.65:
+    return f"Moderate Fog ({val:.2f})"
+  elif val < 0.85:
+    return f"Thick Fog ({val:.2f})"
+  else:
+    return f"Dense Fog ({val:.2f})"
+
+
 def get_live_badge(latest_ts, max_live_mins=10):
   if pd.isna(latest_ts):
     return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'

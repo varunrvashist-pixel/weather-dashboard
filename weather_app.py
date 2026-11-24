@@ -100,6 +100,7 @@ SCOPES = [
 LACROSSE_SHEET_ID = "1NwM9U45ulkX_bTh5OVW5Sucah5VkacV7G1dj9uYXDXw"
 TEMPEST_SHEET_ID = "1krSreOTSO_JkXZy_aVzsMKtOgQNUombxadCT6JqUCjQ"
 DIY_SHEET_ID = "1YdRqfRsdRBIKEtmVNGujmUIpSGTWbYyVejcGfbVcQbI"
+METAR_SHEET_ID = "1ZMwL4PO-vWTFPPk829Z6NCm5853zbh_ykmMn6mhBZaQ"
 
 
 # ---------------- MICROCLIMATE & DEW POINT HELPERS ----------------
@@ -154,7 +155,35 @@ def compute_relative_humidity(temp_c, dewp_c):
     return None
 
 
-def get_live_badge(latest_ts):
+def normalize_fog_signals(df_diy, df_metar, prox_min=10.0, prox_max=500.0):
+  """Maps BME280 proximity readings and METAR visibility/fog onto a 0.0 (Clear) to 1.0 (Dense Fog) scale."""
+  diy_out = df_diy.copy()
+  metar_out = df_metar.copy()
+
+  if not metar_out.empty:
+    fog_col = find_col(metar_out, ["Fog", "Fog Index"])
+    vis_col = find_col(metar_out, ["Visibility", "visib"])
+    if fog_col:
+      metar_out["Fog Index"] = pd.to_numeric(
+          metar_out[fog_col], errors="coerce"
+      ).clip(0.0, 1.0)
+    elif vis_col:
+      vis = pd.to_numeric(metar_out[vis_col], errors="coerce").clip(0.0, 10.0)
+      metar_out["Fog Index"] = (1.0 - (vis / 10.0)).round(2)
+
+  if not diy_out.empty:
+    prox_col = find_col(
+        diy_out, ["Proximity", "Prox", "Fog", "proximity", "IR Proximity"]
+    )
+    if prox_col:
+      prox = pd.to_numeric(diy_out[prox_col], errors="coerce")
+      scaled = (prox - prox_min) / (prox_max - prox_min)
+      diy_out["Fog Index"] = scaled.clip(0.0, 1.0).round(2)
+
+  return diy_out, metar_out
+
+
+def get_live_badge(latest_ts, max_live_mins=10):
   if pd.isna(latest_ts):
     return '<span style="color:#8b949e; font-size:0.75rem; font-weight:600;">⚪ OFFLINE</span>'
 
@@ -162,9 +191,9 @@ def get_live_badge(latest_ts):
   raw_time = pd.to_datetime(latest_ts).replace(tzinfo=None)
 
   diff_min = max(0, int((now - raw_time).total_seconds() / 60))
-  if diff_min <= 10:
+  if diff_min <= max_live_mins:
     return '<span style="background:rgba(46,160,67,0.15); color:#3fb950; border:1px solid rgba(46,160,67,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🟢 LIVE</span>'
-  elif diff_min <= 60:
+  elif diff_min <= 90:
     return f'<span style="background:rgba(210,153,34,0.15); color:#d29922; border:1px solid rgba(210,153,34,0.4); padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">🟡 {diff_min}m AGO</span>'
   else:
     hrs = diff_min // 60
@@ -265,85 +294,22 @@ def load_sheet_data(sheet_id):
 
 
 @st.cache_data(ttl=300)
-def fetch_metar_history(icao="KSQL", hours=168):
-  """Fetches up to `hours` of historical METAR observations from NOAA Aviation Weather API."""
+def fetch_live_metar_banner(icao="KSQL"):
+  """Fetches the latest raw METAR string & flight category for the live banner."""
   try:
-    url = f"https://aviationweather.gov/api/data/metar?ids={icao}&format=json&hours={hours}"
-    resp = requests.get(url, timeout=12)
+    url = f"https://aviationweather.gov/api/data/metar?ids={icao}&format=json"
+    resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     if not data:
-      return None, pd.DataFrame()
-
-    # Latest observation is first in the returned list
-    latest_obs = data[0]
-    temp_c = latest_obs.get("temp")
-    dewp_c = latest_obs.get("dewp")
-    temp_f = round((temp_c * 9 / 5) + 32, 1) if temp_c is not None else None
-    dewp_f = round((dewp_c * 9 / 5) + 32, 1) if dewp_c is not None else None
-    hum_pct = compute_relative_humidity(temp_c, dewp_c)
-
-    wspd_kt = latest_obs.get("wspd")
-    wspd_mph = round(wspd_kt * 1.15078, 1) if wspd_kt is not None else None
-    wdir = latest_obs.get("wdir")
-
-    altim = latest_obs.get("altim")
-    visib = latest_obs.get("visib")
-    flt_cat = latest_obs.get("fltCat", "N/A")
-    raw_ob = latest_obs.get("rawOb", "N/A")
-
-    obs_time = latest_obs.get("obsTime")
-    local_time_str = "N/A"
-    if obs_time:
-      dt_local = datetime.fromtimestamp(
-          obs_time, tz=ZoneInfo("America/Los_Angeles")
-      )
-      local_time_str = dt_local.strftime("%b %d, %-I:%M %p")
-
-    latest_dict = {
-        "icao": icao,
-        "temp_f": temp_f,
-        "dewp_f": dewp_f,
-        "hum_pct": hum_pct,
-        "wspd_mph": wspd_mph,
-        "wdir": wdir,
-        "altim": altim,
-        "visib": visib,
-        "flt_cat": flt_cat,
-        "raw_ob": raw_ob,
-        "time_str": local_time_str,
+      return None
+    obs = data[0]
+    return {
+        "flt_cat": obs.get("fltCat", "N/A"),
+        "raw_ob": obs.get("rawOb", "N/A"),
     }
-
-    # Build historical DataFrame for charting
-    rows = []
-    for obs in data:
-      ts_epoch = obs.get("obsTime")
-      if not ts_epoch:
-        continue
-      dt_pt = datetime.fromtimestamp(
-          ts_epoch, tz=ZoneInfo("America/Los_Angeles")
-      ).replace(tzinfo=None)
-
-      t_c = obs.get("temp")
-      d_c = obs.get("dewp")
-      w_kt = obs.get("wspd")
-      p_hpa = obs.get("altim")
-
-      rows.append({
-          "Timestamp": dt_pt,
-          "Temperature": round((t_c * 9 / 5) + 32, 1) if t_c is not None else None,
-          "Humidity": compute_relative_humidity(t_c, d_c),
-          "Wind Speed": round(w_kt * 1.15078, 1) if w_kt is not None else None,
-          "Pressure": float(p_hpa) if p_hpa is not None else None,
-      })
-
-    df_hist = pd.DataFrame(rows)
-    if not df_hist.empty:
-      df_hist = df_hist.dropna(subset=["Timestamp"]).sort_values("Timestamp")
-
-    return latest_dict, df_hist
   except Exception:
-    return None, pd.DataFrame()
+    return None
 
 
 def format_display_time(ts):
@@ -425,12 +391,16 @@ def extract_station_metrics(df):
   p_col = find_col(
       df, ["Pressure", "Pressure (hPa)", "Barometric Pressure", "press"]
   )
+  v_col = find_col(df, ["Visibility", "visib"])
+  f_col = find_col(df, ["Fog", "Fog Index"])
 
   val_t = clean_float(latest[t_col]) if t_col else None
   val_h = clean_float(latest[h_col]) if h_col else None
   val_w = clean_float(latest[w_col]) if w_col else None
   val_r = clean_float(latest[r_col]) if r_col else None
   val_p = clean_float(latest[p_col]) if p_col else None
+  val_v = clean_float(latest[v_col]) if v_col else None
+  val_f = clean_float(latest[f_col]) if f_col else None
 
   return {
       "temp_str": f"{val_t} °F" if val_t is not None else "N/A",
@@ -438,6 +408,8 @@ def extract_station_metrics(df):
       "wind_str": f"{val_w} mph" if val_w is not None else "TBD",
       "rain_str": f"{val_r} in" if val_r is not None else "0.0 in",
       "press_str": f"{val_p} hPa" if val_p is not None else "N/A",
+      "vis_str": f"{val_v} mi" if val_v is not None else "N/A",
+      "fog_val": val_f,
       "raw_ts": latest["Timestamp"],
       "time_str": format_display_time(latest["Timestamp"]),
   }
@@ -630,7 +602,13 @@ def render_styled_chart(
   return fig
 
 
-def render_station_charts(df, tab_name, include_wind=False, custom_press_range=None):
+def render_station_charts(
+    df,
+    tab_name,
+    include_wind=False,
+    include_rain=True,
+    custom_press_range=None,
+):
   if df.empty:
     st.info("No logged data available in this timeframe.")
     return
@@ -654,6 +632,8 @@ def render_station_charts(df, tab_name, include_wind=False, custom_press_range=N
   press_col = find_col(
       plot_df, ["Pressure", "Pressure (hPa)", "Barometric Pressure"]
   )
+  vis_col = find_col(plot_df, ["Visibility", "visib"])
+  fog_col = find_col(plot_df, ["Fog", "Fog Index"])
 
   chart_config = {"responsive": True, "displayModeBar": False}
 
@@ -735,7 +715,7 @@ def render_station_charts(df, tab_name, include_wind=False, custom_press_range=N
           config=chart_config,
       )
 
-  if rain_col:
+  if include_rain and rain_col:
     plot_df[rain_col] = pd.to_numeric(
         plot_df[rain_col]
         .astype(str)
@@ -788,15 +768,64 @@ def render_station_charts(df, tab_name, include_wind=False, custom_press_range=N
           config=chart_config,
       )
 
+  if vis_col:
+    plot_df[vis_col] = pd.to_numeric(plot_df[vis_col], errors="coerce")
+    clean_vis = plot_df.dropna(subset=[vis_col, "Timestamp"]).sort_values(
+        "Timestamp"
+    )
+    if not clean_vis.empty:
+      st.plotly_chart(
+          render_styled_chart(
+              clean_vis,
+              vis_col,
+              "Visibility Trend (Miles)",
+              "#10b981",
+              "rgba(16, 185, 129, 0.08)",
+              tick_format,
+              day_x_range,
+              y_range=[0.0, 10.5],
+          ),
+          use_container_width=True,
+          config=chart_config,
+      )
+
+  if fog_col:
+    plot_df[fog_col] = pd.to_numeric(plot_df[fog_col], errors="coerce")
+    clean_fog = plot_df.dropna(subset=[fog_col, "Timestamp"]).sort_values(
+        "Timestamp"
+    )
+    if not clean_fog.empty:
+      st.plotly_chart(
+          render_styled_chart(
+              clean_fog,
+              fog_col,
+              "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
+              "#f43f5e",
+              "rgba(244, 63, 94, 0.08)",
+              tick_format,
+              day_x_range,
+              y_range=[0.0, 1.05],
+          ),
+          use_container_width=True,
+          config=chart_config,
+      )
+
 
 # ---------------- COMBINED MULTI-LINE CHARTS ----------------
 def render_combined_chart(
-    df_dict, col_options, title, y_suffix, tick_format, day_x_range
+    df_dict,
+    col_options,
+    title,
+    y_suffix,
+    tick_format,
+    day_x_range,
+    y_range=None,
 ):
   fig = go.Figure()
   colors = {
       "Tempest": "#06b6d4",
       "DIY BME280": "#f97316",
+      "METAR (KSQL)": "#10b981",
   }
   has_data = False
 
@@ -833,6 +862,15 @@ def render_combined_chart(
   if not has_data:
     return None
 
+  yaxis_dict = dict(
+      showgrid=True,
+      gridcolor="rgba(240,246,252,0.06)",
+      color="#8b949e",
+      zeroline=False,
+  )
+  if y_range:
+    yaxis_dict["range"] = y_range
+
   layout_args = dict(
       title=title,
       paper_bgcolor="rgba(0,0,0,0)",
@@ -846,12 +884,7 @@ def render_combined_chart(
           color="#8b949e",
           linecolor="rgba(240,246,252,0.1)",
       ),
-      yaxis=dict(
-          showgrid=True,
-          gridcolor="rgba(240,246,252,0.06)",
-          color="#8b949e",
-          zeroline=False,
-      ),
+      yaxis=yaxis_dict,
       legend=dict(
           orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
       ),
@@ -1076,103 +1109,96 @@ def render_dashboard(selected_page):
     )
 
   elif selected_page == "METAR":
-    metar_header_l, metar_header_r = st.columns([2, 1])
-    with metar_header_l:
-      st.markdown(
-          "<h2 style='margin-bottom:0.2rem;'>✈️ Aviation METAR Feed</h2>",
-          unsafe_allow_html=True,
-      )
-      st.caption("Official Nearby Airport Surface Observations & Trends")
-    with metar_header_r:
-      selected_icao = st.radio(
-          "Airport Station",
-          ["KSQL", "KSFO", "KPAO"],
-          index=0,
-          horizontal=True,
-          label_visibility="collapsed",
-          key="metar_icao_picker",
+    st.markdown(
+        "<h2 style='margin-bottom:0.2rem;'>✈️ Aviation METAR Feed (KSQL)</h2>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Historical San Carlos Airport Log & Visibility-Based Fog Tracking"
+    )
+
+    df_metar = load_sheet_data(METAR_SHEET_ID)
+    live_banner = fetch_live_metar_banner("KSQL")
+
+    with st.container(border=True):
+      m_metar = extract_station_metrics(df_metar)
+      status_tag = (
+          get_live_badge(m_metar["raw_ts"], max_live_mins=65)
+          if m_metar
+          else "⚪ OFFLINE"
       )
 
-    metar, df_metar_hist = fetch_metar_history(selected_icao, hours=168)
-    with st.container(border=True):
-      if metar:
+      fog_val = m_metar["fog_val"] if m_metar else None
+      if fog_val is not None:
+        fog_risk = (
+            "High"
+            if fog_val >= 0.7
+            else ("Moderate" if fog_val >= 0.3 else "Low")
+        )
+      else:
+        fog_risk = "N/A"
+
+      cat_badge = ""
+      if live_banner and live_banner.get("flt_cat"):
+        flt_cat = live_banner["flt_cat"]
         cat_color = (
             "#3fb950"
-            if metar["flt_cat"] == "VFR"
-            else ("#d29922" if metar["flt_cat"] == "MVFR" else "#f85149")
+            if flt_cat == "VFR"
+            else ("#d29922" if flt_cat == "MVFR" else "#f85149")
         )
         cat_badge = (
             f"<span style='background:rgba(240,246,252,0.08); color:{cat_color};"
             f" border:1px solid {cat_color}; padding:2px 10px;"
             " border-radius:12px; font-size:0.75rem;"
-            f" font-weight:700;'>{metar['flt_cat']}</span>"
-        )
-        st.markdown(
-            "<div style='display:flex; justify-content:space-between;"
-            f" align-items:center;'><b>🛫 {metar['icao']} Surface"
-            f" Report</b>{cat_badge}</div>",
-            unsafe_allow_html=True,
+            f" font-weight:700; margin-left:6px;'>{flt_cat}</span>"
         )
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(
-            "Temperature",
-            f"{metar['temp_f']} °F" if metar["temp_f"] is not None else "N/A",
-        )
-        m2.metric(
-            "Humidity",
-            f"{metar['hum_pct']} %" if metar["hum_pct"] is not None else "N/A",
-        )
-        wind_val = (
-            f"{metar['wspd_mph']} mph ({metar['wdir']}°)"
-            if metar["wspd_mph"] is not None
-            else "Calm"
-        )
-        m3.metric("Wind", wind_val)
-        m4.metric(
-            "Pressure",
-            f"{metar['altim']} hPa" if metar["altim"] is not None else "N/A",
-        )
+      st.markdown(
+          "<div style='display:flex; justify-content:space-between;"
+          " align-items:center;'><b>🛫 KSQL Surface"
+          f" Report</b><div>{get_fog_badge(fog_risk)} {cat_badge}"
+          f" {status_tag}</div></div>",
+          unsafe_allow_html=True,
+      )
 
-        st.markdown(
-            f"<div style='margin-top:0.8rem; padding:0.65rem;"
-            " background:rgba(13,17,23,0.8); border-radius:8px;"
-            " font-family:monospace; font-size:0.85rem;"
-            f" color:#79c0ff;'>{metar['raw_ob']}</div>",
-            unsafe_allow_html=True,
-        )
+      if m_metar:
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Temperature", m_metar["temp_str"])
+        m2.metric("Humidity", m_metar["hum_str"])
+        m3.metric("Wind Speed", m_metar["wind_str"])
+        m4.metric("Pressure", m_metar["press_str"])
+        m5.metric("Visibility", m_metar["vis_str"])
+
+        if live_banner and live_banner.get("raw_ob"):
+          st.markdown(
+              "<div style='margin-top:0.8rem; padding:0.65rem;"
+              " background:rgba(13,17,23,0.8); border-radius:8px;"
+              " font-family:monospace; font-size:0.85rem;"
+              f" color:#79c0ff;'>{live_banner['raw_ob']}</div>",
+              unsafe_allow_html=True,
+          )
         st.caption(
-            f"Reported at: {metar['time_str']} • Dew Point: {metar['dewp_f']} °F"
-            f" • Visibility: {metar['visib']} mi (Rain & Fog charts omitted)"
+            f"Latest logged observation: {m_metar['time_str']} • Normalized Fog"
+            f" Index: {fog_val if fog_val is not None else 'N/A'}"
         )
       else:
-        st.warning(f"Unable to fetch live METAR report for {selected_icao}.")
+        st.warning("No logged data available in the METAR Google Sheet yet.")
 
-    if not df_metar_hist.empty:
-      metar_tf = st.radio(
-          "METAR History Window",
-          ["24 Hours", "3 Days", "7 Days"],
-          index=0,
-          horizontal=True,
-          label_visibility="collapsed",
-          key="metar_tf",
-      )
-      hours_map = {"24 Hours": 24, "3 Days": 72, "7 Days": 168}
-      cutoff = df_metar_hist["Timestamp"].max() - pd.Timedelta(
-          hours=hours_map[metar_tf]
-      )
-      filtered_metar = df_metar_hist[
-          df_metar_hist["Timestamp"] >= cutoff
-      ].copy()
+    timeframe = st.radio(
+        "Select Timeframe",
+        ["Daily", "Weekly", "Monthly", "All Time"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="metar_tf",
+    )
+    render_station_charts(
+        filter_by_duration(df_metar, timeframe.lower()),
+        timeframe.lower(),
+        include_wind=True,
+        include_rain=False,
+        custom_press_range=[1005.0, 1030.0],
+    )
 
-      # Renders Temperature, Humidity, Wind Speed, and Pressure in order
-      render_station_charts(
-          filtered_metar,
-          "metar_custom",
-          include_wind=True,
-          custom_press_range=[1005.0, 1030.0],
-      )
-      
   else:
     # ---------------- STATION COMPARISON PAGE ----------------
     comp_header_l, comp_header_r = st.columns([2, 1])
@@ -1181,38 +1207,72 @@ def render_dashboard(selected_page):
           "<h2 style='margin-bottom:0.2rem;'>📊 Station Comparison</h2>",
           unsafe_allow_html=True,
       )
-      st.caption("Side-by-side analysis of DIY BME280 vs. Tempest")
+      st.caption(
+          "Validate DIY BME280 Sensors Against Tempest & KSQL METAR"
+      )
     with comp_header_r:
       comp_station_choice = st.radio(
           "Compare With",
-          ["Tempest"],
+          ["Tempest", "METAR (KSQL)"],
           index=0,
           horizontal=True,
           label_visibility="collapsed",
           key="comp_station_picker",
       )
 
-    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
     df_diy = load_sheet_data(DIY_SHEET_ID)
+    df_tempest = load_sheet_data(TEMPEST_SHEET_ID)
+    df_metar = load_sheet_data(METAR_SHEET_ID)
 
-    with st.container(border=True):
-      m_tempest = extract_station_metrics(df_tempest)
-      status_tag = (
-          get_live_badge(m_tempest["raw_ts"]) if m_tempest else "⚪ Offline"
-      )
-      st.markdown(
-          "<div style='display:flex; justify-content:space-between;"
-          f" align-items:center;'><b>⚡ Tempest Station</b>{status_tag}</div>",
-          unsafe_allow_html=True,
-      )
-      if m_tempest:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Temperature", m_tempest["temp_str"])
-        m2.metric("Wind Speed", m_tempest["wind_str"])
-        m3.metric("Humidity", m_tempest["hum_str"])
-        st.caption(f"Latest observation: {m_tempest['time_str']}")
-      else:
-        st.warning("No live data available for Tempest.")
+    # Normalize proximity sensor & METAR visibility to 0.0 - 1.0 Fog Index
+    df_diy_norm, df_metar_norm = normalize_fog_signals(df_diy, df_metar)
+
+    if comp_station_choice == "Tempest":
+      with st.container(border=True):
+        m_tempest = extract_station_metrics(df_tempest)
+        status_tag = (
+            get_live_badge(m_tempest["raw_ts"]) if m_tempest else "⚪ OFFLINE"
+        )
+        st.markdown(
+            "<div style='display:flex; justify-content:space-between;"
+            f" align-items:center;'><b>⚡ Tempest Station</b>{status_tag}</div>",
+            unsafe_allow_html=True,
+        )
+        if m_tempest:
+          m1, m2, m3 = st.columns(3)
+          m1.metric("Temperature", m_tempest["temp_str"])
+          m2.metric("Wind Speed", m_tempest["wind_str"])
+          m3.metric("Humidity", m_tempest["hum_str"])
+          st.caption(f"Latest observation: {m_tempest['time_str']}")
+        else:
+          st.warning("No live data available for Tempest.")
+    else:
+      with st.container(border=True):
+        m_metar = extract_station_metrics(df_metar_norm)
+        status_tag = (
+            get_live_badge(m_metar["raw_ts"], max_live_mins=65)
+            if m_metar
+            else "⚪ OFFLINE"
+        )
+        st.markdown(
+            "<div style='display:flex; justify-content:space-between;"
+            f" align-items:center;'><b>🛫 KSQL METAR Station</b>{status_tag}</div>",
+            unsafe_allow_html=True,
+        )
+        if m_metar:
+          m1, m2, m3, m4 = st.columns(4)
+          m1.metric("Temperature", m_metar["temp_str"])
+          m2.metric("Humidity", m_metar["hum_str"])
+          m3.metric("Visibility", m_metar["vis_str"])
+          m4.metric(
+              "Fog Index",
+              f"{m_metar['fog_val']}"
+              if m_metar["fog_val"] is not None
+              else "N/A",
+          )
+          st.caption(f"Latest observation: {m_metar['time_str']}")
+        else:
+          st.warning("No live data available for KSQL METAR.")
 
     st.markdown("<br>", unsafe_allow_html=True)
     timeframe = st.radio(
@@ -1224,10 +1284,16 @@ def render_dashboard(selected_page):
     )
     duration_key = timeframe.lower()
 
-    df_dict_all = {
-        "Tempest": filter_by_duration(df_tempest, duration_key),
-        "DIY BME280": filter_by_duration(df_diy, duration_key),
-    }
+    if comp_station_choice == "Tempest":
+      df_dict_all = {
+          "Tempest": filter_by_duration(df_tempest, duration_key),
+          "DIY BME280": filter_by_duration(df_diy_norm, duration_key),
+      }
+    else:
+      df_dict_all = {
+          "METAR (KSQL)": filter_by_duration(df_metar_norm, duration_key),
+          "DIY BME280": filter_by_duration(df_diy_norm, duration_key),
+      }
 
     day_x_range = None
     tick_format = "%b %d, %-I:%M %p"
@@ -1244,6 +1310,20 @@ def render_dashboard(selected_page):
         tick_format = "%-I:%M %p"
 
     chart_config = {"responsive": True, "displayModeBar": False}
+
+    # If comparing against METAR, show the Normalized 0-1 Fog Index overlay right at the top
+    if comp_station_choice == "METAR (KSQL)":
+      fig_fog = render_combined_chart(
+          df_dict_all,
+          ["Fog Index", "Fog"],
+          "Fog Validation: Proximity Sensor vs. KSQL METAR (0 = Clear, 1 = Dense Fog)",
+          "",
+          tick_format,
+          day_x_range,
+          y_range=[0.0, 1.05],
+      )
+      if fig_fog:
+        st.plotly_chart(fig_fog, use_container_width=True, config=chart_config)
 
     fig_temp = render_combined_chart(
         df_dict_all,
@@ -1278,16 +1358,17 @@ def render_dashboard(selected_page):
     if fig_wind:
       st.plotly_chart(fig_wind, use_container_width=True, config=chart_config)
 
-    fig_rain = render_combined_chart(
-        df_dict_all,
-        ["Rain", "Rainfall", "Precipitation"],
-        "Rainfall Trend",
-        "in",
-        tick_format,
-        day_x_range,
-    )
-    if fig_rain:
-      st.plotly_chart(fig_rain, use_container_width=True, config=chart_config)
+    if comp_station_choice == "Tempest":
+      fig_rain = render_combined_chart(
+          df_dict_all,
+          ["Rain", "Rainfall", "Precipitation"],
+          "Rainfall Trend",
+          "in",
+          tick_format,
+          day_x_range,
+      )
+      if fig_rain:
+        st.plotly_chart(fig_rain, use_container_width=True, config=chart_config)
 
 
 render_dashboard(st.session_state.current_page)

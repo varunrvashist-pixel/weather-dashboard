@@ -821,20 +821,47 @@ def render_station_charts(
         "Timestamp"
     )
     if not clean_fog.empty:
-      st.plotly_chart(
-          render_styled_chart(
-              clean_fog,
-              fog_col,
-              "Normalized Fog Index (0 = Clear, 1 = Dense Fog)",
-              "#f43f5e",
-              "rgba(244, 63, 94, 0.08)",
-              tick_format,
-              day_x_range,
-              y_range=[0.0, 1.05],
-          ),
-          use_container_width=True,
-          config=chart_config,
+      clean_fog["Fog_Label"] = clean_fog[fog_col].apply(classify_fog_label)
+      show_markers = len(clean_fog) <= 15
+      fig_fog = px.line(
+          clean_fog,
+          x="Timestamp",
+          y=fog_col,
+          title="Normalized Fog Index",
+          markers=show_markers,
+          custom_data=["Fog_Label"],
       )
+      fig_fog.update_traces(
+          line=dict(color="#f43f5e", width=2.5),
+          marker=dict(size=7, color="#f43f5e"),
+          fill="tozeroy",
+          fillcolor="rgba(244, 63, 94, 0.08)",
+          hovertemplate="%{x|%b %d, %-I:%M %p}<br><b>%{customdata[0]}</b><extra></extra>",
+      )
+      layout_fog = dict(
+          paper_bgcolor="rgba(0,0,0,0)",
+          plot_bgcolor="rgba(0,0,0,0)",
+          font=dict(color="#8b949e", family="-apple-system, sans-serif"),
+          hovermode="x unified",
+          margin=dict(l=10, r=10, t=35, b=10),
+          xaxis=dict(
+              showgrid=False,
+              tickformat=tick_format,
+              color="#8b949e",
+              linecolor="rgba(240,246,252,0.1)",
+          ),
+          yaxis=dict(
+              showgrid=True,
+              gridcolor="rgba(240,246,252,0.06)",
+              color="#8b949e",
+              zeroline=False,
+              range=[-0.05, 1.05],
+          ),
+      )
+      if day_x_range:
+        layout_fog["xaxis_range"] = day_x_range
+      fig_fog.update_layout(**layout_fog)
+      st.plotly_chart(fig_fog, use_container_width=True, config=chart_config)
 
 
 # ---------------- COMBINED MULTI-LINE CHARTS ----------------
@@ -872,20 +899,33 @@ def render_combined_chart(
       if not clean_df.empty:
         has_data = True
         trace_mode = "lines+markers" if len(clean_df) <= 15 else "lines"
+
+        if "Fog" in title:
+          custom_labels = clean_df[col].apply(classify_fog_label)
+          hover_tmpl = (
+              "%{x|%b %d, %-I:%M %p}<br><b>%{customdata}</b>"
+              f"<extra>{station_name}</extra>"
+          )
+        else:
+          custom_labels = None
+          hover_tmpl = (
+              f"%{{x|%b %d, %-I:%M %p}}<br><b>%{{y}} {y_suffix}</b>"
+              f"<extra>{station_name}</extra>"
+          )
+
         fig.add_trace(
             go.Scatter(
                 x=clean_df["Timestamp"],
                 y=clean_df[col],
                 mode=trace_mode,
                 name=station_name,
+                customdata=custom_labels,
                 line=dict(color=colors.get(station_name, "#ffffff"), width=2.5),
                 marker=dict(size=7, color=colors.get(station_name, "#ffffff")),
-                hovertemplate=(
-                    f"%{{x|%b %d, %-I:%M %p}}<br><b>%{{y}} {y_suffix}</b>"
-                    f"<extra>{station_name}</extra>"
-                ),
+                hovertemplate=hover_tmpl,
             )
         )
+        
 
   if not has_data:
     return None
@@ -928,6 +968,11 @@ def render_combined_chart(
 if "current_page" not in st.session_state:
   st.session_state.current_page = "DIY_BME280"
 
+
+def switch_tab(page_key):
+  st.session_state.current_page = page_key
+
+
 nav_cols = st.columns(5)
 
 tabs = [
@@ -941,18 +986,14 @@ tabs = [
 for col, (label, page_key) in zip(nav_cols, tabs):
   with col:
     is_active = st.session_state.current_page == page_key
-    if st.button(
+    st.button(
         label,
+        key=f"nav_{page_key}",
         type="primary" if is_active else "secondary",
         use_container_width=True,
-    ):
-      st.session_state.current_page = page_key
-      st.rerun()
-
-st.markdown(
-    "<hr style='margin-top: 0.5rem; margin-bottom: 1.5rem;'>",
-    unsafe_allow_html=True,
-)
+        on_click=switch_tab,
+        args=(page_key,),
+    )
 
 
 # ---------------- RENDER SELECTED DASHBOARD ----------------
